@@ -29,7 +29,7 @@ import {
     snapshotMessageRange,
     summaryceptionRecallText,
     uniqueStrings,
-} from './core.js?v=46';
+} from './core.js?v=47';
 import { compileContext } from './context-compiler.js?v=5';
 import { loadScopedNpcSources, formatNpcLorebookFoundation } from './npc-lorebook-importer.js';
 import { reconcileNpcLorebookBrains } from './npc-lorebook-runtime.js';
@@ -73,7 +73,7 @@ import {
     formatTranscript,
     insufficientResponseCap,
     planNarratorPromptDelivery,
-} from './prompts.js?v=7';
+} from './prompts.js?v=8';
 import { compileTriggerEventDeliveryPreview } from './event-delivery.js?v=2';
 import { requestEventDirectorProposal } from './event-director-client.js';
 import { buildEventDirectorMessages } from './event-director-prompts.js';
