@@ -1,12 +1,12 @@
 {
-    "display_name": "InnerLore — Living Characters & World",
+    "display_name": "InnerLore — Living Characters & World (NPC Test)",
     "loading_order": 60,
     "requires": [],
     "optional": [],
-    "js": "index.js?v=110",
+    "js": "index.js?v=111",
     "css": "style.css",
     "author": "ChrisDitfort",
-    "version": "0.22.5",
-    "auto_update": true,
-    "home_page": "https://github.com/ChrisDitfort/SillyTavern-InnerLore"
+    "version": "0.22.5-npc.1",
+    "auto_update": false,
+    "home_page": "https://github.com/A-Kader94/SillyTavern-InnerLore"
 }
