@@ -31,6 +31,8 @@ import {
     uniqueStrings,
 } from './core.js?v=46';
 import { compileContext } from './context-compiler.js?v=5';
+import { loadScopedNpcSources, formatNpcLorebookFoundation } from './npc-lorebook-importer.js';
+import { reconcileNpcLorebookBrains } from './npc-lorebook-runtime.js';
 import { deriveSceneState } from './scene.js?v=4';
 import { createMapPanel, createMinimap } from './map-view.js?v=3';
 import {
@@ -491,6 +493,10 @@ const defaultSettings = Object.freeze({
     automaticEventDirectorMinimumConfidence: 0.82,
     automaticEventDirectorIncludePrivateMinds: false,
     automaticEventDirectorExpirationTurns: 40,
+    npcLorebookImportEnabled: true,
+    npcLorebookImportMode: 'balanced',
+    npcLorebookMaximumNpcs: 10,
+    npcLorebookExtraBooks: [],
     lorebookRegistry: {},
     pendingChatCleanups: {},
     storageBackend: 'sqlite',
@@ -519,6 +525,10 @@ const runtime = {
     historyFallbackChatId: '',
     historyFallbackBoundary: -1,
     deferHistoryRebuild: false,
+    npcLorebookChatId: '',
+    npcLorebookNpcs: [],
+    npcLorebookContext: '',
+    npcLorebookWarnings: [],
     preparingFoundation: false,
     foundationPromise: null,
     foundationChatId: '',
@@ -3209,6 +3219,45 @@ function settingsWorldProgressionWatermark(store) {
         : store?.lastProcessedIndex ?? -1;
 }
 
+/** Load only explicitly attached World Info books; originals remain untouched. */
+async function refreshNpcLorebookSources() {
+    const chatId=currentChatId();
+    runtime.npcLorebookChatId='';
+    runtime.npcLorebookNpcs=[];
+    runtime.npcLorebookContext='';
+    runtime.npcLorebookWarnings=[];
+    const settings=getSettings();
+    if(!chatId||settings.npcLorebookImportEnabled===false)return;
+    const result=await loadScopedNpcSources(context(),{
+        explicitNames:settings.npcLorebookExtraBooks||[],
+        mode:settings.npcLorebookImportMode==='strict'?'strict':'balanced',
+        maximumNpcs:settings.npcLorebookMaximumNpcs||10,
+    });
+    if(currentChatId()!==chatId)return;
+    runtime.npcLorebookChatId=chatId;
+    runtime.npcLorebookNpcs=result.npcs;
+    runtime.npcLorebookWarnings=result.warnings;
+    runtime.npcLorebookContext=formatNpcLorebookFoundation(result.npcs);
+    if(result.warnings.length){
+        console.warn('[InnerLore] NPC source read incomplete; source reconciliation skipped',result.warnings);
+        return;
+    }
+    const store=getChatStore();
+    if(!store||store.needsRebuild||currentChatId()!==chatId)return;
+    const changes=reconcileNpcLorebookBrains(store,result.npcs,{normalizeBrainRecord,canonicalNameKey});
+    if(changes.changed){
+        if(changes.created)store.expressionFoundationVersion=0;
+        await saveChatStore();
+        console.info('[InnerLore] NPC lorebook foundations synced',changes);
+    }
+}
+function currentNpcLorebookContext() {
+    return runtime.npcLorebookChatId===currentChatId()?runtime.npcLorebookContext:'';
+}
+function currentNpcLorebookNpcs() {
+    return runtime.npcLorebookChatId===currentChatId()?runtime.npcLorebookNpcs:[];
+}
+
 function getCardContext() {
     try {
         return formatCharacterCard(context().getCharacterCardFields?.() || {});
@@ -3343,6 +3392,8 @@ async function analyzeRange(targetStore, startIndex, endIndex, options = {}) {
                 store: targetStore,
                 currentIndex: curatorEnd,
                 characterCard: getCardContext(),
+                npcLorebookContext: currentNpcLorebookContext(),
+                npcLorebookNpcs: currentNpcLorebookNpcs(),
                 playerName: ctx.name1,
                 recentExpressionText: collectRecentStoryExpressions(ctx.chat, {
                     endIndex: curatorEnd,
@@ -3371,6 +3422,8 @@ async function analyzeRange(targetStore, startIndex, endIndex, options = {}) {
                 progression: targetStore.progression,
                 currentIndex: progressionEnd,
                 characterCard: getCardContext(),
+                npcLorebookContext: currentNpcLorebookContext(),
+                npcLorebookNpcs: currentNpcLorebookNpcs(),
                 playerName: ctx.name1,
                 settings,
             });
@@ -4016,6 +4069,9 @@ async function rebuildFromChat({ automatic = false } = {}) {
 
         carryManualState(oldStore, temporary);
         copyCardExpressionFoundation(temporary, oldStore, { copyCurrentMind: false });
+        if(runtime.npcLorebookChatId===runChatId&&!runtime.npcLorebookWarnings.length){
+            reconcileNpcLorebookBrains(temporary,runtime.npcLorebookNpcs,{normalizeBrainRecord,canonicalNameKey});
+        }
         temporary.lorebookName = oldStore.lorebookName;
         temporary.lastProcessedIndex = completedHistoryIndex;
         temporary.assistantTurnsSincePass = 0;
@@ -4171,15 +4227,15 @@ const FOUNDATION_OUTER_VOICE_KINDS = new Set([
 
 function cardBackedEntries(entries) {
     return Object.fromEntries(Object.entries(entries || {}).filter(([, entry]) => (
-        entry?.basis === 'character_card'
+        entry?.basis === 'character_card' || entry?.basis === 'lorebook'
     )));
 }
 
 function hasStructuredExpressionFoundation(brain) {
     const facets = Object.values(brain?.persistentSelf?.facets || {})
-        .filter(entry => entry?.basis === 'character_card');
+        .filter(entry => entry?.basis === 'character_card' || entry?.basis === 'lorebook');
     const voice = Object.values(brain?.persistentSelf?.voice || {})
-        .filter(entry => entry?.basis === 'character_card');
+        .filter(entry => entry?.basis === 'character_card' || entry?.basis === 'lorebook');
     return facets.some(entry => entry.kind === 'personal_anchor')
         && voice.some(entry => entry.kind === 'thought_style')
         && voice.some(entry => entry.kind === 'emphasis')
@@ -4313,6 +4369,8 @@ async function prepareExpressionFoundation(targetStore, boundary) {
             store: targetStore,
             currentIndex: endIndex,
             characterCard: getCardContext(),
+            npcLorebookContext: currentNpcLorebookContext(),
+            npcLorebookNpcs: currentNpcLorebookNpcs(),
             playerName: ctx.name1,
             recentExpressionText: collectRecentStoryExpressions(ctx.chat, {
                 endIndex,
@@ -5769,6 +5827,9 @@ function registerEvents() {
         });
     }
     eventSource.on(events.CHAT_CHANGED, async () => {
+        runtime.npcLorebookChatId='';
+        runtime.npcLorebookNpcs=[];
+        runtime.npcLorebookContext='';
         updateCastCards();
         restoreNarratorPromptSwap();
         syncNarrativeLog();
@@ -5802,6 +5863,7 @@ function registerEvents() {
             toastr.error(`InnerLore could not open its SQLite store: ${error.message || error}`, DISPLAY_NAME, { timeOut: 0 });
             return;
         }
+        try { await refreshNpcLorebookSources(); }catch(error){console.error('[InnerLore] NPC source refresh failed',error);}
         setStatus('idle', 'Idle', currentChatId() ? 'Ready for the next story reply.' : 'Waiting for a chat.');
         updateUI();
         // Prime the compiled packet (and the cast cards' scene participants)
@@ -5820,6 +5882,9 @@ function registerEvents() {
         } else if (!expressionFoundationReady(getChatStore())) {
             scheduleExpressionFoundationWarmup(250);
         }
+    });
+    if(events.WORLD_INFO_UPDATED)eventSource.on(events.WORLD_INFO_UPDATED,()=>{
+        void refreshNpcLorebookSources().then(()=>updateInjection()).catch(error=>console.error('[InnerLore] NPC refresh failed',error));
     });
     const scheduleExternalHistoryRebuild = () => {
         // Regenerate removes the empty placeholder and Continue may update its
@@ -5869,6 +5934,7 @@ async function initializeServerState() {
         return;
     }
     registerEvents();
+    try { await refreshNpcLorebookSources(); }catch(error){console.error('[InnerLore] NPC source startup failed',error);}
 
     if (Object.keys(getSettings().pendingChatCleanups).length
         || Object.keys(getSettings().pendingStorageCleanups).length) {
