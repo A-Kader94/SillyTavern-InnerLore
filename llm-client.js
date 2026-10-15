@@ -1,5 +1,5 @@
 import { cleanString } from './core.js';
-import { buildRepairMessages } from './prompts.js?v=7';
+import { buildRepairMessages } from './prompts.js?v=8';
 import { CURATOR_JSON_SCHEMA } from './structured-output.js';
 import {
     OUTPUT_FORMAT_DSL,
