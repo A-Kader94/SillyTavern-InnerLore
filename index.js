@@ -63,7 +63,7 @@ import {
     waitForBackgroundIdle,
     testInnerLoreConnection,
     setStoryIdleGate,
-} from './llm-client.js?v=15';
+} from './llm-client.js?v=16';
 import {
     deleteInnerLorebooksForChat,
     openInnerLorebook,
@@ -5234,14 +5234,15 @@ function bindUIEvents() {
         // model responses, chat identifiers, connection profiles, or API keys.
         const safeEntries = getTelemetry().entries.slice(-800).map(entry => {
             const allowed = ['t', 'turn', 'kind', 'phase', 'durationMs', 'inChars', 'outChars', 'status',
-                'route', 'attempt', 'attempts', 'configuredTimeoutSeconds', 'circuitBreakerSeconds'];
+                'route', 'attempt', 'attempts', 'configuredTimeoutSeconds', 'circuitBreakerSeconds',
+                'component', 'chars', 'chunks', 'reasoningChars'];
             return Object.fromEntries(allowed.filter(key =>
                 ['string', 'number', 'boolean'].includes(typeof entry[key])
             ).map(key => [key, entry[key]]));
         });
         const store = runtime.store;
         const report = {
-            schema: 'innerlore-diagnostics-v1',
+            schema: 'innerlore-diagnostics-v2',
             exportedAt: new Date().toISOString(),
             extensionVersion: EXTENSION_VERSION,
             status: {
