@@ -5255,7 +5255,7 @@ function bindUIEvents() {
         const safeEntries = getTelemetry().entries.slice(-800).map(entry => {
             const allowed = ['t', 'turn', 'kind', 'phase', 'durationMs', 'inChars', 'outChars', 'status',
                 'route', 'attempt', 'attempts', 'configuredTimeoutSeconds', 'circuitBreakerSeconds',
-                'component', 'chars', 'chunks', 'reasoningChars', 'overdueMs'];
+                'component', 'chars', 'chunks', 'reasoningChars', 'overdueMs', 'mode', 'index'];
             return Object.fromEntries(allowed.filter(key =>
                 ['string', 'number', 'boolean'].includes(typeof entry[key])
             ).map(key => [key, entry[key]]));
