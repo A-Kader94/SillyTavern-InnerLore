@@ -211,6 +211,8 @@ async function sendViaProfile(settings, messages, signal, options = {}) {
     }
 
     const maximumTokens = Math.max(800, Math.min(32_000, Number(settings.maximumResponseTokens) || 6_000));
+    const reasoningMode = settings.curatorReasoningMode === 'none' ? 'none' : 'profile';
+    recordTelemetryEntry({ kind: 'model-reasoning', phase: 'requested', mode: reasoningMode, route: 'selected profile' });
     const raw = await withBackgroundSlot(() => service.sendRequest(
         profileId,
         messages,
@@ -233,6 +235,7 @@ async function sendViaProfile(settings, messages, signal, options = {}) {
             top_p: 0.9,
             max_tokens: maximumTokens,
             include_reasoning: false,
+            ...(reasoningMode === 'none' ? { reasoning_effort: 'none' } : {}),
             ...(options.jsonSchema ? { json_schema: options.jsonSchema } : {}),
         },
     ), signal);
