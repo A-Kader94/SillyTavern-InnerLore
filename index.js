@@ -63,7 +63,7 @@ import {
     waitForBackgroundIdle,
     testInnerLoreConnection,
     setStoryIdleGate,
-} from './llm-client.js?v=19';
+} from './llm-client.js?v=20';
 import {
     deleteInnerLorebooksForChat,
     openInnerLorebook,
@@ -470,6 +470,7 @@ const defaultSettings = Object.freeze({
     requestCircuitBreakerSeconds: 90,
     temperature: 0.15,
     maintenanceOutputFormat: 'dsl',
+    curatorReasoningMode: 'profile',
     repairMalformedJson: true,
     autoRebuildOnHistoryChange: true,
     autoRebuildMessageLimit: 120,
@@ -701,6 +702,7 @@ function getSettings() {
     settings.pendingStorageCleanups = normalizeStorageRegistry(settings.pendingStorageCleanups);
     if (!['automatic', 'macro'].includes(settings.contextDeliveryMode)) settings.contextDeliveryMode = 'automatic';
     if (!['json', 'dsl'].includes(settings.maintenanceOutputFormat)) settings.maintenanceOutputFormat = 'dsl';
+    if (!['profile', 'none'].includes(settings.curatorReasoningMode)) settings.curatorReasoningMode = 'profile';
     settings.contextProfileId = cleanString(settings.contextProfileId, 64).toLocaleLowerCase();
     if (!/^[a-z0-9][a-z0-9_-]{0,63}$/u.test(settings.contextProfileId)) settings.contextProfileId = 'balanced';
     // Derived budgets are the always-on behavior; the mode is pinned and the
@@ -2435,6 +2437,7 @@ function applySettingsToUI() {
         il_temperature: settings.temperature,
         il_request_timeout: settings.requestTimeoutSeconds,
         il_maintenance_output_format: settings.maintenanceOutputFormat,
+        il_curator_reasoning_mode: settings.curatorReasoningMode,
         il_repair_json: settings.repairMalformedJson,
         il_process_every: settings.processEveryAssistantTurns,
         il_adaptive_maintenance: settings.adaptiveMaintenanceEnabled,
@@ -4995,6 +4998,7 @@ function bindUIEvents() {
         refreshContextAfterConfigurationChange();
     });
     bindSelect('il_maintenance_output_format', 'maintenanceOutputFormat', ['json', 'dsl']);
+    bindSelect('il_curator_reasoning_mode', 'curatorReasoningMode', ['profile', 'none']);
     bindCheckbox('il_repair_json', 'repairMalformedJson');
     bindCheckbox('il_auto_rebuild_history', 'autoRebuildOnHistoryChange');
     bindCheckbox('il_debug', 'debug');
@@ -5260,6 +5264,7 @@ function bindUIEvents() {
             },
             configuration: {
                 outputFormat: getSettings().maintenanceOutputFormat,
+                curatorReasoningMode: getSettings().curatorReasoningMode,
                 maxResponseTokens: Number(getSettings().maximumResponseTokens) || null,
                 requestTimeoutSeconds: Number(getSettings().requestTimeoutSeconds) || null,
                 circuitBreakerSeconds: Number(getSettings().requestCircuitBreakerSeconds) || null,
