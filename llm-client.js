@@ -539,6 +539,8 @@ async function sendInnerLoreRequestInner(settings, messages, signal, options = {
 function recordCuratorPromptSizes(messages) {
     const systemChars = messages.filter(m => m.role === 'system')
         .reduce((total, m) => total + String(m.content || '').length, 0);
+    const foundationOnly = messages.some(m => m.role === 'user' && String(m.content || '').includes('<EXPRESSION_FOUNDATION_PREFLIGHT'));
+    recordTelemetryEntry({ kind: 'curator-prompt', phase: 'task', component: foundationOnly ? 'foundation' : 'ordinary', chars: systemChars });
     recordTelemetryEntry({ kind: 'curator-prompt', phase: 'size', component: 'system-instructions', chars: systemChars });
     const user = messages.filter(m => m.role === 'user').map(m => String(m.content || '')).join('\n');
     const sections = [
