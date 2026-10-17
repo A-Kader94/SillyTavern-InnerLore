@@ -300,6 +300,7 @@ function narratorPill() {
 }
 
 function showNarratorPill(label) {
+    return; // Mobile-friendly compatibility mode: no floating narration banner.
     const pill = narratorPill();
     pill.querySelector('span').textContent = label;
     pill.style.display = 'flex';
@@ -1766,6 +1767,9 @@ function resolveSceneLocationForDisplay(scene) {
 }
 
 function updateCastCards() {
+    document.getElementById('il_cast_bar')?.style.setProperty('display', 'none');
+    document.body.classList.remove('il-dock-active');
+    return; // Preserve SillyTavern's native chat layout.
     if (typeof document === 'undefined' || typeof document.createElement !== 'function') return;
     ensureDockStyles();
     const bar = castBarElement();
@@ -5728,29 +5732,8 @@ function registerEvents() {
         eventSource.on(events.CHAT_COMPLETION_PROMPT_READY, async prompt => {
             const settings = getSettings();
             if (!settings.enabled || !runtime.activeStoryGenerationId) return;
-            // Background-first: everything already running - and anything
-            // scheduled but not yet started - completes before the story
-            // narrates, so the packet carries the freshest world state.
-            const scheduledBackground = () => Boolean(
-                runtime.queued || runtime.historyRebuildQueued || runtime.foundationPromise
-                || runtime.historyTimer || runtime.preparingFoundation);
+            // Compatibility mode: never block native narration on InnerLore background tasks.
             const waitStart = Date.now();
-            if (backgroundInFlightCount() > 0 || scheduledBackground()) {
-                console.debug(`[InnerLore] Background-first: story waiting behind ${backgroundInFlightCount()} in-flight background request(s)${scheduledBackground() ? ' + scheduled work' : ''}.`);
-                showNarratorPill('Narrating - background work finishing first');
-                try {
-                    for (;;) {
-                        await waitForBackgroundIdle();
-                        if (!scheduledBackground() || Date.now() - waitStart > 120_000) break;
-                        await new Promise(resolve => setTimeout(resolve, 750));
-                    }
-                } finally {
-                    console.debug(`[InnerLore] Background-first: background work done after ${Math.round((Date.now() - waitStart) / 1000)}s; the story request leaves now.`);
-                    showNarratorPill('Narrating');
-                }
-            } else {
-                console.debug('[InnerLore] Background-first: no pending background work; the story request leaves immediately.');
-            }
             recordTelemetryEntry({
                 kind: 'story', phase: 'departed',
                 waitedForBackgroundMs: Date.now() - waitStart,
@@ -5761,6 +5744,9 @@ function registerEvents() {
             runtime.storyRequestInFlightAt = Date.now();
             runtime.storyClaimIsQuiet = generationType === 'quiet';
             runtime.announceStoryState?.(true);
+            // Preserve native SillyTavern prompt history and reasoning formatting.
+            // The former history bypass removed assistant messages, including reasoning metadata.
+            return;
             if (!runtime.derivedContext) return;
             // SillyTavern 1.18 passes { chat }; older builds passed { messages }.
             // The array must be mutated in place - reassignment is ignored.
