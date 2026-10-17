@@ -333,10 +333,15 @@ export async function withRequestTimeout(callback, externalSignal, timeoutMillis
     let timer;
     let onExternalAbort;
     let timedOut = false;
+    const deadlineAt = Date.now() + milliseconds;
 
     const guard = new Promise((resolve, reject) => {
         timer = setTimeout(() => {
             timedOut = true;
+            const overdueMs = Math.max(0, Date.now() - deadlineAt);
+            // A delayed timer indicates a blocked event loop or suspended tab.
+            // Browser timers cannot interrupt synchronous blocking work.
+            recordTelemetryEntry({ kind: 'model-deadline', phase: 'expired', durationMs: milliseconds, overdueMs });
             controller.abort();
             reject(timeoutError(milliseconds));
         }, milliseconds);
