@@ -4005,7 +4005,7 @@ async function rebuildFromChat({ automatic = false } = {}) {
     // suffix of the chat, restore the newest checkpoint whose recorded history
     // still matches the chat and re-derive the curator fold (entities/brains)
     // from just after it, instead of replaying the whole conversation from an
-    // empty store. Manual "Rebuild From Chat" always starts fresh. Only the
+    // empty store. A healthy manual "Rebuild From Chat" starts fresh. Only the
     // expensive per-batch curator fold is resumed; World Progression is rebuilt
     // fully in both paths (its runtime is not resumed mid-history yet).
     const divergenceIndex = firstDivergenceIndex(ctx.chat, oldStore.processedFingerprints || {});
@@ -4013,7 +4013,7 @@ async function rebuildFromChat({ automatic = false } = {}) {
     // manual retry may resume those, but a fresh healthy manual rebuild remains
     // a full replay. Snapshot matching prevents reuse after chat edits.
     const retryingFailedRebuild = wasFailedRebuild;
-    const resumeCheckpoint = (automatic || retryingFailedRebuild) && Number.isFinite(divergenceIndex)
+    const resumeCheckpoint = retryingFailedRebuild || (automatic && Number.isFinite(divergenceIndex))
         ? selectResumeCheckpoint(oldStore.checkpoints, ctx.chat,
             retryingFailedRebuild ? completedHistoryIndex + 1 : divergenceIndex)
         : null;

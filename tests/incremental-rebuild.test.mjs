@@ -42,6 +42,7 @@ function harness(chat, store, requestCounter) {
         },
         inner_lore: {
             enabled: true,
+            storageBackend: 'embedded',
             autoUpdate: true,
             innerSelfEnabled: true,
             autoLoreEnabled: true,
@@ -93,7 +94,7 @@ function harness(chat, store, requestCounter) {
         saveWorldInfo: async (name, data) => worlds.set(name, structuredClone(data)),
         updateWorldInfoList: async () => {},
     };
-    globalThis.document = { activeElement: null, getElementById: () => null, querySelectorAll: () => [] };
+    globalThis.document = { body: { classList: { add() {}, remove() {}, contains() { return false; } } }, activeElement: null, getElementById: () => null, querySelectorAll: () => [] };
     globalThis.$ = () => ({ append: () => {} });
     globalThis.toastr = { error: () => {}, warning: () => {}, success: () => {}, info: () => {} };
     globalThis.confirm = () => true;
@@ -104,12 +105,12 @@ function harness(chat, store, requestCounter) {
 test('a late edit resumes the rebuild from a checkpoint instead of replaying the whole chat', async () => {
     const chat = buildChat();
 
-    // A checkpoint captured at message 19 that carries a distinctive entity the
+    // A checkpoint captured at message 20 that carries a distinctive entity the
     // mock curator will never re-emit. If the rebuild resumes from it, the
     // entity survives; a full rebuild from an empty store would drop it.
     const cpStore = createEmptyStore('resume-chat');
-    cpStore.lastProcessedIndex = 19;
-    cpStore.processedFingerprints = snapshotMessageRange(chat, 0, 19);
+    cpStore.lastProcessedIndex = 20;
+    cpStore.processedFingerprints = snapshotMessageRange(chat, 0, 20);
     mergeEntityOperations(cpStore, [{ type: 'location', name: 'Old Landmark', importance: 80, facts: ['Established early in the story.'] }], { messageIndex: 5, minimumImportance: 0 });
     const checkpoint = createStoreCheckpoint(cpStore);
     assert.ok(checkpoint.entities['location:old landmark'], 'checkpoint carries the landmark');
@@ -121,7 +122,7 @@ test('a late edit resumes the rebuild from a checkpoint instead of replaying the
     // Pre-rebuild (stale) entities also hold the landmark.
     store.entities = structuredClone(checkpoint.entities);
 
-    // Edit a LATE message so divergence (22) is after the checkpoint (19).
+    // Edit a LATE message so divergence (22) is after the checkpoint (20).
     chat[22] = { is_user: false, is_system: false, name: 'Narrator', mes: 'Turn 22 — a completely rewritten late beat.' };
     assert.notEqual(messageFingerprint(chat[22]), store.processedFingerprints[22], 'the late edit changes the fingerprint');
 
@@ -136,7 +137,7 @@ test('a late edit resumes the rebuild from a checkpoint instead of replaying the
     const rebuilt = SillyTavern.getContext().chatMetadata.inner_lore;
     assert.ok(rebuilt.entities['location:old landmark'], 'the checkpoint state was resumed (landmark preserved)');
     assert.equal(rebuilt.lastProcessedIndex, 22, 'rebuild reached the completed head');
-    // Only the tail after index 19 is re-derived: a single ~3-message batch, not
+    // Only the tail after index 20 is re-derived: a single 2-message batch, not
     // the three batches a full 0..22 replay would need.
     assert.ok(counter.count <= 1, `resume should issue at most one curator batch, issued ${counter.count}`);
 });
@@ -145,8 +146,8 @@ test('an early edit with no covering checkpoint falls back to a full rebuild', a
     const chat = buildChat();
 
     const cpStore = createEmptyStore('fallback-chat');
-    cpStore.lastProcessedIndex = 19;
-    cpStore.processedFingerprints = snapshotMessageRange(chat, 0, 19);
+    cpStore.lastProcessedIndex = 20;
+    cpStore.processedFingerprints = snapshotMessageRange(chat, 0, 20);
     mergeEntityOperations(cpStore, [{ type: 'location', name: 'Old Landmark', importance: 80, facts: ['Established early.'] }], { messageIndex: 5, minimumImportance: 0 });
     const checkpoint = createStoreCheckpoint(cpStore);
 
@@ -156,7 +157,7 @@ test('an early edit with no covering checkpoint falls back to a full rebuild', a
     store.checkpoints = [checkpoint];
     store.entities = structuredClone(checkpoint.entities);
 
-    // Edit an EARLY message (index 3), before the only checkpoint (19).
+    // Edit an EARLY message (index 3), before the only checkpoint (20).
     chat[3] = { is_user: true, is_system: false, name: 'Jet', mes: 'Turn 3 — an early rewrite invalidates the checkpoint.' };
 
     const counter = { count: 0 };
@@ -169,4 +170,26 @@ test('an early edit with no covering checkpoint falls back to a full rebuild', a
     // landmark, so it must be gone.
     assert.equal(rebuilt.entities['location:old landmark'], undefined, 'no checkpoint covered the early edit, so a full rebuild dropped stale state');
     assert.ok(counter.count >= 2, `a full 0..22 rebuild should issue multiple curator batches, issued ${counter.count}`);
+});
+
+test('a failed rebuild resumes a completed checkpoint when history is unchanged', async () => {
+    const chat = buildChat();
+    const store = createEmptyStore('unchanged-retry-chat');
+    store.lastProcessedIndex = 22;
+    store.processedFingerprints = snapshotMessageRange(chat, 0, 22);
+    const completed = createEmptyStore(store.chatId);
+    completed.lastProcessedIndex = 20;
+    completed.processedFingerprints = snapshotMessageRange(chat, 0, 20);
+    mergeEntityOperations(completed, [{ type: 'location', name: 'Completed Discovery', importance: 80, facts: ['Earned in a completed batch.'] }], { messageIndex: 20, minimumImportance: 0 });
+    store.checkpoints = [createStoreCheckpoint(completed)];
+    store.needsRebuild = true;
+    store.lastError = 'upstream timed out';
+    const counter = { count: 0 };
+    harness(chat, store, counter);
+    await import(`../index.js?unchanged-retry=${Date.now()}`);
+    await waitFor(() => counter.count > 0 && SillyTavern.getContext().chatMetadata.inner_lore.needsRebuild === false, 8_000);
+    const rebuilt = SillyTavern.getContext().chatMetadata.inner_lore;
+    assert.ok(rebuilt.entities['location:completed discovery'], 'completed batch state survives retry without an edit');
+    assert.equal(rebuilt.lastProcessedIndex, 22);
+    assert.equal(counter.count, 1, 'only the unfinished tail is requested');
 });
