@@ -427,12 +427,12 @@ ${JSON.stringify(existingBrains)}
 
 <REQUIRED_SPARSE_VOICE_AUDIT>
 ${JSON.stringify(sparseVoiceAudit)}
-For every listed NPC, inspect CHARACTER_CARD and AUTHORITATIVE_NPC_LOREBOOK for explicit temperament, habits, vulnerabilities, or dialogue evidence. When that evidence exists, this patch must fill each listed missing voice foundation with compact voice.set entries before adding lower-value scene-derived Persistent Self facets and mark those supported entries with basis "character_card" or "lorebook" according to source. A newly created card or lorebook NPC needs the same check even though it is not yet listed. Never invent a foundation when the card and passage genuinely provide no expressive evidence.
+Fill listed missing voice foundations when card/lorebook evidence supports them, with matching provenance. Apply the same check to newly created authored NPCs. Never invent unsupported traits.
 </REQUIRED_SPARSE_VOICE_AUDIT>
 
 <REQUIRED_CARD_DISTINCTIVENESS_AUDIT>
 ${JSON.stringify(sparseDistinctivenessAudit)}
-For every listed active card- or lorebook-established NPC, inspect CHARACTER_CARD and AUTHORITATIVE_NPC_LOREBOOK for one concrete psychologically useful association beyond broad temperament. When supported, this patch must add one compact persistent_self.set item of kind personal_anchor with basis "character_card" or "lorebook" according to source before lower-value scene-derived facets. Prefer a formative incident, coping ritual, symbolic object, recurring private comparison, or idiosyncratic priority that could naturally alter perception or self-talk. A newly created card NPC needs the same check. Do not invent one when the card genuinely contains only broad traits, and never paste biography or create a compulsory catchphrase.
+When supported by authored evidence, add one distinctive first-person personal_anchor for each listed or newly created authored NPC, using correct provenance. No invented biography, generic trait, or forced catchphrase.
 </REQUIRED_CARD_DISTINCTIVENESS_AUDIT>
 
 <RECENT_EXPRESSION_COOLDOWN priority="hard">
