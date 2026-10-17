@@ -51,6 +51,9 @@ import {
 import { collectRecentStoryExpressions } from './expression-cooldown.js';
 import {
     backgroundInFlightCount,
+    getTelemetry,
+    nextTelemetryTurn,
+    recordTelemetryEntry,
     chooseDefaultProfileId,
     setPeerBackgroundInFlight,
     setSlotListener,
@@ -60,7 +63,7 @@ import {
     waitForBackgroundIdle,
     testInnerLoreConnection,
     setStoryIdleGate,
-} from './llm-client.js?v=14';
+} from './llm-client.js?v=15';
 import {
     deleteInnerLorebooksForChat,
     openInnerLorebook,
@@ -5225,6 +5228,55 @@ function bindUIEvents() {
         } catch (error) {
             toastr.error(`Could not expand the narrator prompt: ${error?.message || error}`, DISPLAY_NAME);
         }
+    });
+    document.getElementById('il_download_diagnostics')?.addEventListener('click', () => {
+        // Export only operational metrics. Never include prompts, story text,
+        // model responses, chat identifiers, connection profiles, or API keys.
+        const safeEntries = getTelemetry().entries.slice(-800).map(entry => {
+            const allowed = ['t', 'turn', 'kind', 'phase', 'durationMs', 'inChars', 'outChars', 'status',
+                'route', 'attempt', 'attempts', 'configuredTimeoutSeconds', 'circuitBreakerSeconds'];
+            return Object.fromEntries(allowed.filter(key =>
+                ['string', 'number', 'boolean'].includes(typeof entry[key])
+            ).map(key => [key, entry[key]]));
+        });
+        const store = runtime.store;
+        const report = {
+            schema: 'innerlore-diagnostics-v1',
+            exportedAt: new Date().toISOString(),
+            extensionVersion: EXTENSION_VERSION,
+            status: {
+                kind: runtime.statusKind,
+                label: runtime.statusLabel,
+                // Deliberately omit free-text error details that could contain provider payloads.
+                rebuilding: Boolean(runtime.rebuilding),
+                processing: Boolean(runtime.processing),
+                rebuildQueued: Boolean(runtime.historyRebuildQueued),
+            },
+            chat: {
+                messageCount: context().chat?.length || 0,
+                processedIndex: Number.isInteger(store?.lastProcessedIndex) ? store.lastProcessedIndex : null,
+                rebuildRequired: Boolean(store?.needsRebuild),
+            },
+            configuration: {
+                outputFormat: getSettings().maintenanceOutputFormat,
+                maxResponseTokens: Number(getSettings().maximumResponseTokens) || null,
+                requestTimeoutSeconds: Number(getSettings().requestTimeoutSeconds) || null,
+                circuitBreakerSeconds: Number(getSettings().requestCircuitBreakerSeconds) || null,
+                progressionEnabled: Boolean(getSettings().worldProgressionEnabled),
+                progressionTimeoutSeconds: Number(getSettings().progressionRequestTimeoutSeconds) || null,
+            },
+            telemetry: safeEntries,
+        };
+        const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = 'innerlore-diagnostics-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        toastr.success('Diagnostics downloaded without story text or credentials.', DISPLAY_NAME);
     });
     document.getElementById('il_export_telemetry')?.addEventListener('click', () => {
         const data = getTelemetry();
