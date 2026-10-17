@@ -241,10 +241,27 @@ async function sendViaProfile(settings, messages, signal, options = {}) {
         // accumulated text. Only the final chunk's values are meaningful here.
         let text = '';
         let reasoning = '';
+        const streamStartedAt = Date.now();
+        let firstChunkSeen = false;
+        let firstContentSeen = false;
+        let chunkCount = 0;
         for await (const chunk of raw()) {
+            chunkCount++;
+            if (!firstChunkSeen) {
+                firstChunkSeen = true;
+                recordTelemetryEntry({ kind: 'model-stream', phase: 'first-chunk', durationMs: Date.now() - streamStartedAt });
+            }
+            if (!firstContentSeen && (
+                (typeof chunk?.text === 'string' && chunk.text.length > 0)
+                || (typeof chunk?.state?.reasoning === 'string' && chunk.state.reasoning.length > 0)
+            )) {
+                firstContentSeen = true;
+                recordTelemetryEntry({ kind: 'model-stream', phase: 'first-content', durationMs: Date.now() - streamStartedAt });
+            }
             if (typeof chunk?.text === 'string' && chunk.text) text = chunk.text;
             if (typeof chunk?.state?.reasoning === 'string' && chunk.state.reasoning) reasoning = chunk.state.reasoning;
         }
+        recordTelemetryEntry({ kind: 'model-stream', phase: 'complete', durationMs: Date.now() - streamStartedAt, chunks: chunkCount, outChars: text.length, reasoningChars: reasoning.length });
         const streamed = text.trim() ? text : reasoning;
         if (CONCURRENCY_REJECTION_PATTERN.test(text)) {
             throw new Error('Provider reported a concurrent generation lock despite serialized scheduling.');
@@ -506,9 +523,40 @@ async function sendInnerLoreRequestInner(settings, messages, signal, options = {
     throw new Error(`${lastError?.message || 'InnerLore model request failed'}${cause}`, { cause: lastError });
 }
 
+// Metrics only: capture prompt component sizes, never component contents.
+function recordCuratorPromptSizes(messages) {
+    const systemChars = messages.filter(m => m.role === 'system')
+        .reduce((total, m) => total + String(m.content || '').length, 0);
+    recordTelemetryEntry({ kind: 'curator-prompt', phase: 'size', component: 'system-instructions', chars: systemChars });
+    const user = messages.filter(m => m.role === 'user').map(m => String(m.content || '')).join('\n');
+    const sections = [
+        ['character-card', 'CHARACTER_CARD'],
+        ['npc-lorebook', 'AUTHORITATIVE_NPC_LOREBOOK'],
+        ['entity-keyring', 'EXISTING_ENTITY_KEYRING'],
+        ['mind-keyring', 'EXISTING_PRIVATE_MIND_KEYRING'],
+        ['existing-entities', 'EXISTING_RELEVANT_ENTITIES'],
+        ['existing-minds', 'EXISTING_RELEVANT_PRIVATE_MINDS'],
+        ['expression-cooldown', 'RECENT_EXPRESSION_COOLDOWN'],
+        ['passage', 'PASSAGE'],
+    ];
+    let measured = 0;
+    for (const [component, tag] of sections) {
+        const open = '<' + tag + '>';
+        const close = '</' + tag + '>';
+        const start = user.indexOf(open);
+        const end = start < 0 ? -1 : user.indexOf(close, start + open.length);
+        const chars = end < 0 ? 0 : end - start - open.length;
+        measured += chars;
+        recordTelemetryEntry({ kind: 'curator-prompt', phase: 'size', component, chars });
+    }
+    recordTelemetryEntry({ kind: 'curator-prompt', phase: 'size', component: 'other-user-instructions', chars: Math.max(0, user.length - measured) });
+    recordTelemetryEntry({ kind: 'curator-prompt', phase: 'size', component: 'total-content', chars: systemChars + user.length });
+}
+
 export async function requestJsonPatch(settings, messages, signal) {
     const format = normalizeOutputFormat(settings.maintenanceOutputFormat);
     const requestMessages = prepareOutputMessages(messages, { format, task: 'curator' });
+    recordCuratorPromptSizes(requestMessages);
     const requestOptions = structuredRequestOptions(format, CURATOR_JSON_SCHEMA);
     const firstOutput = await sendInnerLoreRequest(settings, requestMessages, signal, requestOptions);
     try {
