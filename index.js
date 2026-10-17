@@ -71,9 +71,10 @@ import {
     buildAnalysisMessages,
     formatCharacterCard,
     formatTranscript,
+    storyTextForAnalysis,
     insufficientResponseCap,
     planNarratorPromptDelivery,
-} from './prompts.js?v=8';
+} from './prompts.js?v=9';
 import { compileTriggerEventDeliveryPreview } from './event-delivery.js?v=2';
 import { requestEventDirectorProposal } from './event-director-client.js';
 import { buildEventDirectorMessages } from './event-director-prompts.js';
@@ -2018,13 +2019,24 @@ function completedAssistantTurnCount(messages, startIndex = 0, endIndex = messag
  * numeric lookback boundary falls between them.
  */
 function completedRebuildBatchEnd(messages, startIndex, targetIndex, maximumMessages) {
-    const candidateEnd = Math.min(
-        targetIndex,
-        startIndex + Math.max(1, Number(maximumMessages) || 1) - 1,
-    );
-    const completedAtOrBeforeBoundary = lastCompletedStoryIndex(messages, candidateEnd);
-    if (completedAtOrBeforeBoundary >= startIndex) return completedAtOrBeforeBoundary;
-    return firstCompletedStoryIndex(messages, startIndex, targetIndex);
+    // Bound both turn count and actual narrative characters. A full-history
+    // rebuild must never submit a huge first batch merely because it contains
+    // few messages. Preserve complete player/story exchanges.
+    const messageLimit = Math.min(8, Math.max(2, Number(maximumMessages) || 2));
+    const characterLimit = 12_000;
+    let characters = 0;
+    let completed = -1;
+    for (let index = startIndex; index <= targetIndex; index++) {
+        const message = messages[index];
+        const relevant = message && (!message.is_system || isSummaryceptionGhosted(message));
+        if (relevant) {
+            const nextLength = storyTextForAnalysis(message).length + 160;
+            if (completed >= startIndex && (index - startIndex >= messageLimit || characters + nextLength > characterLimit)) break;
+            characters += nextLength;
+            if (!message.is_user && cleanString(message.mes)) completed = index;
+        }
+    }
+    return completed >= startIndex ? completed : firstCompletedStoryIndex(messages, startIndex, targetIndex);
 }
 
 function boundedProgressionEnd(messages, startIndex, candidateEnd, maximumMessages, maximumCharacters = 85_000) {
@@ -2040,7 +2052,7 @@ function boundedProgressionEnd(messages, startIndex, candidateEnd, maximumMessag
             && cleanString(message.mes);
         if (!relevant) continue;
         if (lastCompleted >= startIndex && relevantMessages >= messageLimit) break;
-        const messageCharacters = cleanString(message?.mes, 30_000).length + 160;
+        const messageCharacters = storyTextForAnalysis(message).length + 160;
         if (lastCompleted >= startIndex && characters + messageCharacters > maximumCharacters) break;
         relevantMessages++;
         characters += messageCharacters;
