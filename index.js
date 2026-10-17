@@ -63,7 +63,7 @@ import {
     waitForBackgroundIdle,
     testInnerLoreConnection,
     setStoryIdleGate,
-} from './llm-client.js?v=18';
+} from './llm-client.js?v=19';
 import {
     deleteInnerLorebooksForChat,
     openInnerLorebook,
@@ -77,7 +77,7 @@ import {
     storyTextForAnalysis,
     insufficientResponseCap,
     planNarratorPromptDelivery,
-} from './prompts.js?v=12';
+} from './prompts.js?v=13';
 import { compileTriggerEventDeliveryPreview } from './event-delivery.js?v=2';
 import { requestEventDirectorProposal } from './event-director-client.js';
 import { buildEventDirectorMessages } from './event-director-prompts.js';
