@@ -1,4 +1,3 @@
-import { loadWorldInfo } from '../../../../public/scripts/world-info.js';
 /** Read-only NPC discovery from World Info. Never modifies authored entries. */
 const canonical = value => String(value ?? '').normalize('NFKC').toLowerCase().replace(/[\p{P}\p{S}]+/gu,' ').trim();
 const npcLabel = /^\s*(?:\[(?:NPC|Character)\]\s*|(?:NPC|Character):\s*)(.{2,100})$/i;
@@ -31,8 +30,9 @@ export function extractLorebookNpcs(books, options={}) {
 }
 export async function loadScopedNpcSources(ctx,options={}) {
     const books=[],warnings=[];
+    const load = typeof ctx?.loadWorldInfo === 'function' ? ctx.loadWorldInfo.bind(ctx) : (await import('../../../../public/scripts/world-info.js')).loadWorldInfo;
     for(const name of scopedLorebookNames(ctx,options.explicitNames))try{
-        const data=await loadWorldInfo(name);
+        const data=await load(name);
         if(!data || !data.entries)throw Error('missing entries');
         books.push({name,data});
     }catch(error){warnings.push(name+': '+String(error?.message||error));}
