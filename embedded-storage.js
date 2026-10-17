@@ -82,8 +82,21 @@ export class EmbeddedStorageClient {
         const base = Number.isFinite(expectedRevision) ? expectedRevision : (Number(next.revision) || 0);
         next.revision = base + 1;
         next.updatedAt = new Date().toISOString();
-        metadata[metadataKey()] = next;
-        await this.#saveMetadata();
+        const key = metadataKey();
+        const hadPrevious = Object.hasOwn(metadata, key);
+        const previous = metadata[key];
+        metadata[key] = next;
+        try {
+            await this.#saveMetadata();
+        } catch (error) {
+            // Restore only our own uncommitted replacement, never a newer
+            // snapshot installed while persistence was in flight.
+            if (metadata[key] === next) {
+                if (hadPrevious) metadata[key] = previous;
+                else delete metadata[key];
+            }
+            throw error;
+        }
         return { revision: next.revision, snapshotHash: '', updatedAt: next.updatedAt, worldId, chatId };
     }
 

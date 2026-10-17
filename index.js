@@ -1196,12 +1196,19 @@ async function loadChatStore() {
 async function reloadCurrentChatStore() {
     try {
         const chatId = currentChatId();
-        if (!chatId || !runtime.storageWorldId) return;
-        const loaded = await activeStorageClient().load(runtime.storageWorldId);
-        if (loaded && loaded.chatId === chatId) {
-            runtime.store = normalizeStore(loaded, chatId);
+        const worldId = runtime.storageWorldId;
+        const revision = runtime.storageRevision;
+        const generation = runtime.storageLoadGeneration;
+        if (!chatId || !worldId) return;
+        const loaded = await activeStorageClient().load(worldId);
+        if (chatId !== currentChatId() || runtime.storeChatId !== chatId
+            || runtime.storageWorldId !== worldId || runtime.storageRevision !== revision
+            || runtime.storageLoadGeneration !== generation) return;
+        if (loaded?.store && loaded.chatId === chatId) {
+            runtime.store = normalizeStore(loaded.store, chatId);
             runtime.committedEntityCount = Object.keys(runtime.store?.entities || {}).length;
             if (Number.isFinite(loaded.revision)) runtime.storageRevision = loaded.revision;
+            runtime.storageSnapshotHash = loaded.snapshotHash;
             updateUI();
         }
     } catch (error) {
@@ -4000,6 +4007,19 @@ async function rebuildFromChat({ automatic = false } = {}) {
     const runChatId = currentChatId();
     const startingHistoryRevision = runtime.historyRevision;
     const completedHistoryIndex = lastCompletedStoryIndex(ctx.chat);
+    const rebuildHistory = snapshotMessageRange(ctx.chat, 0, completedHistoryIndex);
+    const assertRebuildCurrent = () => {
+        if (currentChatId() !== runChatId || runtime.storeChatId !== runChatId) {
+            throw new DOMException('Chat changed', 'AbortError');
+        }
+        if (runtime.controller?.signal.aborted) throw new DOMException('Rebuild stopped', 'AbortError');
+        if (runtime.historyRevision !== startingHistoryRevision
+            || !messageRangeMatchesSnapshot(context().chat, rebuildHistory)) {
+            const error = new Error('History changed during the rebuild; the replacement was discarded.');
+            error.name = 'InnerLoreHistoryChangedError';
+            throw error;
+        }
+    };
 
     // Phase 2 incremental resume: when an edit/swipe/delete only changed a
     // suffix of the chat, restore the newest checkpoint whose recorded history
@@ -4050,6 +4070,8 @@ async function rebuildFromChat({ automatic = false } = {}) {
     runtime.historyRebuildQueued = false;
     runtime.controller = new AbortController();
     setStatus('working', 'Rebuilding', `Rebuilding ${ctx.chat.length} messages…`);
+    let mirrorChanged = false;
+    let replacementSaved = false;
     try {
         let start = rebuildStartIndex;
         while (start <= completedHistoryIndex) {
@@ -4118,6 +4140,7 @@ async function rebuildFromChat({ automatic = false } = {}) {
         // Record a final checkpoint at the completed head so the next edit can
         // resume from the very end of this rebuild.
         temporary.checkpoints = recordCheckpoint(temporary.checkpoints, createStoreCheckpoint(temporary));
+        assertRebuildCurrent();
         runtime.store = temporary;
         runtime.storeChatId = runChatId;
         const pointer = ctx.chatMetadata?.[MODULE_KEY];
@@ -4126,13 +4149,17 @@ async function rebuildFromChat({ automatic = false } = {}) {
         // earlier pass. Otherwise managed World Info entries from a discarded
         // swipe could remain active outside the metadata store.
         if (temporary.lorebookName || Object.keys(temporary.entities).length) {
+            mirrorChanged = true;
             await syncLorebook(temporary, {
                 chatId: runChatId,
                 characterName: ctx.name2,
                 removeMissing: true,
             });
         }
-        await saveChatStore();
+        assertRebuildCurrent();
+        await saveChatStore({ allowEntityShrink: true });
+        replacementSaved = true;
+        assertRebuildCurrent();
         clearHistoryFallback();
         updateInjection();
         const progressionStats = getProgressionStats(temporary.progression);
@@ -4140,6 +4167,30 @@ async function rebuildFromChat({ automatic = false } = {}) {
         setStatus('success', 'Rebuilt', detail);
         if (!automatic) toastr.success(detail, DISPLAY_NAME, { timeOut: 4_000 });
     } catch (error) {
+        // A response belonging to the chat being left must never save or
+        // restore state into the newly activated chat.
+        if (currentChatId() !== runChatId || runtime.storeChatId !== runChatId) return;
+        if (replacementSaved) {
+            // The durable replacement already committed. Do not roll it back
+            // because a later UI refresh or history check failed.
+            runtime.store.needsRebuild = true;
+            runtime.historyRebuildQueued = true;
+            setStatus('error', 'Rebuild refresh needed', cleanString(error.message || String(error), 2_000));
+            return;
+        }
+        if (runtime.store === temporary) runtime.store = oldStore;
+        if (mirrorChanged) {
+            try {
+                await syncLorebook(oldStore, {
+                    chatId: runChatId, characterName: ctx.name2, removeMissing: true,
+                    rollbackRenderedHashes: Object.fromEntries(Object.values(temporary.entities || {})
+                        .map(record => [record.id, record.renderedHash])),
+                });
+            } catch (mirrorError) {
+                console.error(LOG_PREFIX, 'Could not restore the prior lorebook mirror:', mirrorError);
+            }
+            if (currentChatId() !== runChatId || runtime.storeChatId !== runChatId) return;
+        }
         if (error?.name === 'AbortError' || runtime.controller?.signal.aborted) {
             setStatus('idle', 'Stopped', 'Rebuild stopped; the previous complete state is still intact.');
         } else if (error?.name === 'InnerLoreHistoryChangedError') {
