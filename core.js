@@ -143,6 +143,7 @@ export const THOUGHT_RETENTIONS = Object.freeze([
 /** Provenance controls whether a durable psychological field is branch-safe. */
 export const PSYCHOLOGY_BASES = Object.freeze([
     'character_card',
+    'lorebook',
     'story',
     'consolidated',
 ]);
@@ -927,11 +928,11 @@ export function createHistoryPrefixPromptStore(value, changedIndex) {
             ...Object.values(brain?.persistentSelf?.voice || {}),
             ...Object.values(brain?.persistentSelf?.relationships || {})
                 .flatMap(relationship => Object.values(relationship?.aspects || {})),
-        ].some(entry => entry?.basis === 'character_card');
+        ].some(entry => entry?.basis === 'character_card' || entry?.basis === 'lorebook');
         if (!beforeBoundary(brain?.firstSeenMessage) && !hasCardPsychology) continue;
         const keepPsychologyEntries = entries => Object.fromEntries(
             Object.entries(entries || {}).filter(([, entry]) => (
-                entry?.basis === 'character_card' || beforeBoundary(entry?.sourceMessage)
+                entry?.basis === 'character_card' || entry?.basis === 'lorebook' || beforeBoundary(entry?.sourceMessage)
             )),
         );
         brain.persistentSelf = brain.persistentSelf && typeof brain.persistentSelf === 'object'
@@ -943,7 +944,7 @@ export function createHistoryPrefixPromptStore(value, changedIndex) {
             Object.entries(brain.persistentSelf.relationships || {}).flatMap(([relationshipId, relationship]) => {
                 relationship.aspects = keepPsychologyEntries(relationship?.aspects);
                 if (!beforeBoundary(relationship?.firstSeenMessage)
-                    && !Object.values(relationship.aspects).some(entry => entry?.basis === 'character_card')) return [];
+                    && !Object.values(relationship.aspects).some(entry => entry?.basis === 'character_card' || entry?.basis === 'lorebook')) return [];
                 return Object.keys(relationship.aspects).length ? [[relationshipId, relationship]] : [];
             }),
         );
@@ -2119,7 +2120,7 @@ function mergePsychologyPatch(existing, patch, options = {}) {
 
     for (const rawKey of psychologyPatchDelete(patch)) {
         const key = normalizeThoughtKey(rawKey);
-        if (key) delete target[key];
+        if (key && target[key]?.basis !== 'lorebook') delete target[key];
     }
 
     const proposals = psychologyPatchSet(patch)
@@ -2147,6 +2148,8 @@ function mergePsychologyPatch(existing, patch, options = {}) {
             updatedAt: Date.now(),
         };
         const prior = target[key];
+        // Canonical lorebook entries can change only through source reconciliation.
+        if (prior?.basis === 'lorebook') continue;
         if (prior
             && prior.kind === next.kind
             && prior.statement === next.statement
@@ -2198,7 +2201,7 @@ function psychologyAnchorSignature(value) {
 }
 
 function consolidationPriority(entry, protectedKinds) {
-    const basis = entry.basis === 'character_card' ? 3 : entry.basis === 'consolidated' ? 2 : 1;
+    const basis = entry.basis === 'lorebook' ? 4 : entry.basis === 'character_card' ? 3 : entry.basis === 'consolidated' ? 2 : 1;
     const confidence = entry.confidence === 'confirmed' ? 1 : 0;
     const protectedKind = protectedKinds.has(entry.kind) ? 1 : 0;
     const source = Number.isInteger(entry.sourceMessage) && entry.sourceMessage >= 0
@@ -2235,9 +2238,9 @@ function consolidatePsychologyEntries(entriesValue, options = {}) {
             const duplicateIndex = rightWins ? leftIndex : rightIndex;
             const survivor = entries[survivorIndex];
             const duplicate = entries[duplicateIndex];
-            if (survivor.basis !== 'character_card') survivor.basis = 'consolidated';
+            if (survivor.basis !== 'character_card' && survivor.basis !== 'lorebook') survivor.basis = 'consolidated';
             if (duplicate.confidence === 'confirmed') survivor.confidence = 'confirmed';
-            if (duplicate.statement.length > survivor.statement.length && survivor.basis !== 'character_card') {
+            if (duplicate.statement.length > survivor.statement.length && survivor.basis !== 'character_card' && survivor.basis !== 'lorebook') {
                 survivor.statement = duplicate.statement;
             }
             survivor.sourceMessage = Math.max(
@@ -2320,7 +2323,7 @@ function gateStoryFacetPatch(brain, patch, options = {}) {
         const significant = canonicalNameKey(raw.promotion ?? raw.durability).replace(/\s+/gu, '_') === 'significant_event'
             && SIGNIFICANT_SINGLE_PASS_FACET_KINDS.has(kind)
             && normalizeConfidence(raw.confidence) === 'confirmed';
-        if (updatesExisting || basis === 'character_card' || basis === 'consolidated' || significant) {
+        if (updatesExisting || basis === 'character_card' || basis === 'lorebook' || basis === 'consolidated' || significant) {
             admitted.push(raw);
             delete pending[key];
             continue;

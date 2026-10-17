@@ -1,5 +1,5 @@
 import { cleanString } from './core.js';
-import { buildRepairMessages } from './prompts.js?v=7';
+import { buildRepairMessages } from './prompts.js?v=8';
 import { CURATOR_JSON_SCHEMA } from './structured-output.js';
 import {
     OUTPUT_FORMAT_DSL,
@@ -211,6 +211,8 @@ async function sendViaProfile(settings, messages, signal, options = {}) {
     }
 
     const maximumTokens = Math.max(800, Math.min(32_000, Number(settings.maximumResponseTokens) || 6_000));
+    const reasoningMode = settings.curatorReasoningMode === 'none' ? 'none' : 'profile';
+    recordTelemetryEntry({ kind: 'model-reasoning', phase: 'requested', mode: reasoningMode, route: 'selected profile' });
     const raw = await withBackgroundSlot(() => service.sendRequest(
         profileId,
         messages,
@@ -233,6 +235,7 @@ async function sendViaProfile(settings, messages, signal, options = {}) {
             top_p: 0.9,
             max_tokens: maximumTokens,
             include_reasoning: false,
+            ...(reasoningMode === 'none' ? { reasoning_effort: 'none' } : {}),
             ...(options.jsonSchema ? { json_schema: options.jsonSchema } : {}),
         },
     ), signal);
@@ -241,10 +244,34 @@ async function sendViaProfile(settings, messages, signal, options = {}) {
         // accumulated text. Only the final chunk's values are meaningful here.
         let text = '';
         let reasoning = '';
+        const streamStartedAt = Date.now();
+        let firstChunkSeen = false;
+        let firstContentSeen = false;
+        let chunkCount = 0;
+        try {
         for await (const chunk of raw()) {
+            chunkCount++;
+            if (!firstChunkSeen) {
+                firstChunkSeen = true;
+                recordTelemetryEntry({ kind: 'model-stream', phase: 'first-chunk', durationMs: Date.now() - streamStartedAt });
+            }
+            if (!firstContentSeen && (
+                (typeof chunk?.text === 'string' && chunk.text.length > 0)
+                || (typeof chunk?.state?.reasoning === 'string' && chunk.state.reasoning.length > 0)
+            )) {
+                firstContentSeen = true;
+                recordTelemetryEntry({ kind: 'model-stream', phase: 'first-content', durationMs: Date.now() - streamStartedAt });
+            }
             if (typeof chunk?.text === 'string' && chunk.text) text = chunk.text;
             if (typeof chunk?.state?.reasoning === 'string' && chunk.state.reasoning) reasoning = chunk.state.reasoning;
         }
+        } catch (error) {
+            // Preserve counts even when a request times out or is cancelled.
+            // Never include story text, generated content, or reasoning content.
+            recordTelemetryEntry({ kind: 'model-stream', phase: 'interrupted', durationMs: Date.now() - streamStartedAt, chunks: chunkCount, outChars: text.length, reasoningChars: reasoning.length, status: error?.name || 'Error' });
+            throw error;
+        }
+        recordTelemetryEntry({ kind: 'model-stream', phase: 'complete', durationMs: Date.now() - streamStartedAt, chunks: chunkCount, outChars: text.length, reasoningChars: reasoning.length });
         const streamed = text.trim() ? text : reasoning;
         if (CONCURRENCY_REJECTION_PATTERN.test(text)) {
             throw new Error('Provider reported a concurrent generation lock despite serialized scheduling.');
@@ -309,10 +336,15 @@ export async function withRequestTimeout(callback, externalSignal, timeoutMillis
     let timer;
     let onExternalAbort;
     let timedOut = false;
+    const deadlineAt = Date.now() + milliseconds;
 
     const guard = new Promise((resolve, reject) => {
         timer = setTimeout(() => {
             timedOut = true;
+            const overdueMs = Math.max(0, Date.now() - deadlineAt);
+            // A delayed timer indicates a blocked event loop or suspended tab.
+            // Browser timers cannot interrupt synchronous blocking work.
+            recordTelemetryEntry({ kind: 'model-deadline', phase: 'expired', durationMs: milliseconds, overdueMs });
             controller.abort();
             reject(timeoutError(milliseconds));
         }, milliseconds);
@@ -447,6 +479,7 @@ async function sendInnerLoreRequestInner(settings, messages, signal, options = {
         ...fallbackProfiles.map(profileId => ({ source: 'profile', profileId })),
     ];
     let lastError;
+    const diagnostics = [];
     for (let routeIndex = 0; routeIndex < routes.length; routeIndex++) {
         const route = routes[routeIndex];
         const routeAttempts = routeIndex === 0 ? maximumAttempts : fallbackMaximumAttempts;
@@ -461,6 +494,8 @@ async function sendInnerLoreRequestInner(settings, messages, signal, options = {
                 lastError = timeoutError(circuitBreakerMilliseconds);
                 break;
             }
+            const attemptStartedAt = Date.now();
+            const routeLabel = route.source === 'active' ? 'active' : 'selected profile';
             try {
                 const output = await withRequestTimeout(async attemptSignal => {
                     if (route.source === 'active') {
@@ -468,11 +503,20 @@ async function sendInnerLoreRequestInner(settings, messages, signal, options = {
                     }
                     return await sendViaProfile(routeSettings, messages, attemptSignal, options);
                 }, signal, Math.min(timeoutMilliseconds, remaining));
+                const elapsedMs = Date.now() - attemptStartedAt;
+                diagnostics.push({ route: routeLabel, attempt, elapsedMs, status: 'ok', outputCharacters: typeof output === 'string' ? output.length : 0 });
+                console.info('[InnerLore] Model attempt', diagnostics[diagnostics.length - 1]);
+                recordTelemetryEntry({ kind: 'model-attempt', phase: 'attempt', route: routeLabel, attempt, durationMs: elapsedMs, status: 'ok', outChars: typeof output === 'string' ? output.length : 0 });
                 if (routeIndex > 0) {
                     console.warn(`[InnerLore] Background request recovered through fallback profile ${route.profileId}.`);
                 }
                 return output;
             } catch (error) {
+                const elapsedMs = Date.now() - attemptStartedAt;
+                const failure = { route: routeLabel, attempt, elapsedMs, status: error?.name || 'Error', message: String(error?.message || error).slice(0, 180) };
+                diagnostics.push(failure);
+                console.warn('[InnerLore] Model attempt', failure);
+                recordTelemetryEntry({ kind: 'model-attempt', phase: 'attempt', route: routeLabel, attempt, durationMs: elapsedMs, status: error?.name || 'Error' });
                 if (error?.name === 'AbortError' || signal?.aborted) throw error;
                 lastError = error;
                 const transient = isTransientRequestError(error);
@@ -488,13 +532,49 @@ async function sendInnerLoreRequestInner(settings, messages, signal, options = {
             console.warn(`[InnerLore] Primary background route failed; trying configured fallback profile ${routes[routeIndex + 1].profileId}.`);
         }
     }
+    console.error('[InnerLore] Model request exhausted', { attempts: diagnostics, totalElapsedMs: Date.now() - startedAt, configuredTimeoutSeconds: settings.requestTimeoutSeconds, circuitBreakerSeconds: settings.requestCircuitBreakerSeconds });
+    recordTelemetryEntry({ kind: 'model-request', phase: 'exhausted', durationMs: Date.now() - startedAt, attempts: diagnostics.length, status: 'error', configuredTimeoutSeconds: settings.requestTimeoutSeconds, circuitBreakerSeconds: settings.requestCircuitBreakerSeconds });
     const cause = lastError?.cause?.message ? `: ${lastError.cause.message}` : '';
     throw new Error(`${lastError?.message || 'InnerLore model request failed'}${cause}`, { cause: lastError });
+}
+
+// Metrics only: capture prompt component sizes, never component contents.
+function recordCuratorPromptSizes(messages) {
+    const systemChars = messages.filter(m => m.role === 'system')
+        .reduce((total, m) => total + String(m.content || '').length, 0);
+    const foundationOnly = messages.some(m => m.role === 'user' && String(m.content || '').includes('<EXPRESSION_FOUNDATION_PREFLIGHT'));
+    recordTelemetryEntry({ kind: 'curator-prompt', phase: 'task', component: foundationOnly ? 'foundation' : 'ordinary', chars: systemChars });
+    recordTelemetryEntry({ kind: 'curator-prompt', phase: 'size', component: 'system-instructions', chars: systemChars });
+    const user = messages.filter(m => m.role === 'user').map(m => String(m.content || '')).join('\n');
+    const sections = [
+        ['character-card', 'CHARACTER_CARD'],
+        ['npc-lorebook', 'AUTHORITATIVE_NPC_LOREBOOK'],
+        ['entity-keyring', 'EXISTING_ENTITY_KEYRING'],
+        ['mind-keyring', 'EXISTING_PRIVATE_MIND_KEYRING'],
+        ['existing-entities', 'EXISTING_RELEVANT_ENTITIES'],
+        ['existing-minds', 'EXISTING_RELEVANT_PRIVATE_MINDS'],
+        ['expression-cooldown', 'RECENT_EXPRESSION_COOLDOWN'],
+        ['passage', 'PASSAGE'],
+    ];
+    let measured = 0;
+    for (const [component, tag] of sections) {
+        // Opening tags may have attributes, e.g. priority="hard".
+        const match = new RegExp('<' + tag + '(?:\\s[^>]*)?>').exec(user);
+        const close = '</' + tag + '>';
+        const start = match ? match.index + match[0].length : -1;
+        const end = start < 0 ? -1 : user.indexOf(close, start);
+        const chars = end < 0 ? 0 : end - start;
+        measured += chars;
+        recordTelemetryEntry({ kind: 'curator-prompt', phase: 'size', component, chars });
+    }
+    recordTelemetryEntry({ kind: 'curator-prompt', phase: 'size', component: 'other-user-instructions', chars: Math.max(0, user.length - measured) });
+    recordTelemetryEntry({ kind: 'curator-prompt', phase: 'size', component: 'total-content', chars: systemChars + user.length });
 }
 
 export async function requestJsonPatch(settings, messages, signal) {
     const format = normalizeOutputFormat(settings.maintenanceOutputFormat);
     const requestMessages = prepareOutputMessages(messages, { format, task: 'curator' });
+    recordCuratorPromptSizes(requestMessages);
     const requestOptions = structuredRequestOptions(format, CURATOR_JSON_SCHEMA);
     const firstOutput = await sendInnerLoreRequest(settings, requestMessages, signal, requestOptions);
     try {

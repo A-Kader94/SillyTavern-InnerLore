@@ -154,7 +154,10 @@ export async function syncLorebook(store, options = {}) {
         } else {
             updated++;
             const currentHash = hashString(entry.content || '');
-            if (!record.manualOverride && record.renderedHash && currentHash !== record.renderedHash) {
+            // During failed-rebuild compensation, our own replacement text
+            // is not a user edit. Still preserve genuinely different edits.
+            const isRolledBackWrite = options.rollbackRenderedHashes?.[record.id] === currentHash;
+            if (!isRolledBackWrite && !record.manualOverride && record.renderedHash && currentHash !== record.renderedHash) {
                 record.manualOverride = true;
                 record.manualContent = cleanString(entry.content, 20_000);
                 manualEditsDetected++;
