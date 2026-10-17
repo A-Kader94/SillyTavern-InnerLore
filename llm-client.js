@@ -245,6 +245,7 @@ async function sendViaProfile(settings, messages, signal, options = {}) {
         let firstChunkSeen = false;
         let firstContentSeen = false;
         let chunkCount = 0;
+        try {
         for await (const chunk of raw()) {
             chunkCount++;
             if (!firstChunkSeen) {
@@ -260,6 +261,12 @@ async function sendViaProfile(settings, messages, signal, options = {}) {
             }
             if (typeof chunk?.text === 'string' && chunk.text) text = chunk.text;
             if (typeof chunk?.state?.reasoning === 'string' && chunk.state.reasoning) reasoning = chunk.state.reasoning;
+        }
+        } catch (error) {
+            // Preserve counts even when a request times out or is cancelled.
+            // Never include story text, generated content, or reasoning content.
+            recordTelemetryEntry({ kind: 'model-stream', phase: 'interrupted', durationMs: Date.now() - streamStartedAt, chunks: chunkCount, outChars: text.length, reasoningChars: reasoning.length, status: error?.name || 'Error' });
+            throw error;
         }
         recordTelemetryEntry({ kind: 'model-stream', phase: 'complete', durationMs: Date.now() - streamStartedAt, chunks: chunkCount, outChars: text.length, reasoningChars: reasoning.length });
         const streamed = text.trim() ? text : reasoning;
@@ -541,11 +548,12 @@ function recordCuratorPromptSizes(messages) {
     ];
     let measured = 0;
     for (const [component, tag] of sections) {
-        const open = '<' + tag + '>';
+        // Opening tags may have attributes, e.g. priority="hard".
+        const match = new RegExp('<' + tag + '(?:\\s[^>]*)?>').exec(user);
         const close = '</' + tag + '>';
-        const start = user.indexOf(open);
-        const end = start < 0 ? -1 : user.indexOf(close, start + open.length);
-        const chars = end < 0 ? 0 : end - start - open.length;
+        const start = match ? match.index + match[0].length : -1;
+        const end = start < 0 ? -1 : user.indexOf(close, start);
+        const chars = end < 0 ? 0 : end - start;
         measured += chars;
         recordTelemetryEntry({ kind: 'curator-prompt', phase: 'size', component, chars });
     }
