@@ -166,6 +166,13 @@
                         </label>
                     </div>
 
+                    <label for="il_curator_reasoning_mode">Background Curator reasoning</label>
+                    <select id="il_curator_reasoning_mode" class="text_pole">
+                        <option value="profile">Use connection profile (default)</option>
+                        <option value="none">Request no reasoning (experimental)</option>
+                    </select>
+                    <small class="inner-lore-hint">Only changes InnerLore Curator requests. The provider may ignore the no-reasoning request; inspect exported diagnostics to verify. Does not change story generation.</small>
+
                     <label for="il_maintenance_output_format">Background analysis response format</label>
                     <select id="il_maintenance_output_format" class="text_pole">
                         <option value="dsl">InnerLore DSL v1 (recommended)</option>
