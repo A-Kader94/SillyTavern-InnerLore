@@ -21,6 +21,41 @@ function clip(value, maximum) {
     return `${text.slice(0, Math.max(0, maximum - 1)).trimEnd()}…`;
 }
 
+/**
+ * Keep only the final narrative when a provider has embedded its visible
+ * planning preamble in the message body. Never strip ordinary prose without
+ * an explicit, recognizable planning/presentation boundary.
+ */
+export function storyTextForAnalysis(message) {
+    const raw = cleanString(message?.mes || '', 100_000);
+    if (!raw || message?.is_user || isSummaryceptionGhosted(message)) return raw;
+    // SillyTavern may also store thinking in separate metadata; that is not
+    // included in message.mes and therefore requires no additional filtering.
+    const separators = [
+        /(?:^|\n)\*\*Style check[^\n]*\*\*\s*\n\s*---\s*\n/i,
+        /(?:^|\n)\*\*Style[^\n]*\*\*\s*\n\s*---\s*\n/i,
+    ];
+    const looksLikePlanning = /(?:^|\n)(?:Let me think about this properly\.|Flash thought:|cold coffee, warm LO,|I need to introduce myself as ENI)/i.test(raw);
+    if (!looksLikePlanning) return raw;
+    for (const separator of separators) {
+        const match = separator.exec(raw);
+        if (match) {
+            const story = raw.slice(match.index + match[0].length).trim();
+            if (story) return story;
+        }
+    }
+    // Some responses use a plain horizontal rule before final narration.
+    const marker = /\n\s*---\s*\n/g;
+    let match;
+    let last = null;
+    while ((match = marker.exec(raw)) !== null) last = match;
+    if (last) {
+        const story = raw.slice(last.index + last[0].length).trim();
+        if (story) return story;
+    }
+    return raw;
+}
+
 export function formatTranscript(messages, options = {}) {
     const start = Math.max(0, Number(options.startIndex) || 0);
     const end = Math.min(messages.length - 1, Number.isInteger(options.endIndex) ? options.endIndex : messages.length - 1);
@@ -31,13 +66,15 @@ export function formatTranscript(messages, options = {}) {
 
     for (let index = start; index <= end; index++) {
         const message = messages[index];
-        if (!message || (message.is_system && !isSummaryceptionGhosted(message)) || !cleanString(message.mes)) continue;
+        if (!message || (message.is_system && !isSummaryceptionGhosted(message))) continue;
+        const narrative = storyTextForAnalysis(message);
+        if (!narrative) continue;
         const role = message.is_user
             ? `PLAYER — ${message.name || userName}`
             : isSummaryceptionGhosted(message)
                 ? 'COMPRESSED STORY MEMORY — prior events, avoid double-counting restatements'
                 : `STORY — ${message.name || characterName}`;
-        blocks.push(`[message ${index}; ${role}]\n${cleanString(message.mes, 30_000)}`);
+        blocks.push(`[message ${index}; ${role}]\n${cleanString(narrative, 12_000)}`);
     }
 
     let transcript = blocks.join('\n\n');
