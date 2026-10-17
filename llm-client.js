@@ -447,6 +447,7 @@ async function sendInnerLoreRequestInner(settings, messages, signal, options = {
         ...fallbackProfiles.map(profileId => ({ source: 'profile', profileId })),
     ];
     let lastError;
+    const diagnostics = [];
     for (let routeIndex = 0; routeIndex < routes.length; routeIndex++) {
         const route = routes[routeIndex];
         const routeAttempts = routeIndex === 0 ? maximumAttempts : fallbackMaximumAttempts;
@@ -461,6 +462,8 @@ async function sendInnerLoreRequestInner(settings, messages, signal, options = {
                 lastError = timeoutError(circuitBreakerMilliseconds);
                 break;
             }
+            const attemptStartedAt = Date.now();
+            const routeLabel = route.source === 'active' ? 'active' : 'selected profile';
             try {
                 const output = await withRequestTimeout(async attemptSignal => {
                     if (route.source === 'active') {
@@ -468,11 +471,18 @@ async function sendInnerLoreRequestInner(settings, messages, signal, options = {
                     }
                     return await sendViaProfile(routeSettings, messages, attemptSignal, options);
                 }, signal, Math.min(timeoutMilliseconds, remaining));
+                const elapsedMs = Date.now() - attemptStartedAt;
+                diagnostics.push({ route: routeLabel, attempt, elapsedMs, status: 'ok', outputCharacters: typeof output === 'string' ? output.length : 0 });
+                console.info('[InnerLore] Model attempt', diagnostics[diagnostics.length - 1]);
                 if (routeIndex > 0) {
                     console.warn(`[InnerLore] Background request recovered through fallback profile ${route.profileId}.`);
                 }
                 return output;
             } catch (error) {
+                const elapsedMs = Date.now() - attemptStartedAt;
+                const failure = { route: routeLabel, attempt, elapsedMs, status: error?.name || 'Error', message: String(error?.message || error).slice(0, 180) };
+                diagnostics.push(failure);
+                console.warn('[InnerLore] Model attempt', failure);
                 if (error?.name === 'AbortError' || signal?.aborted) throw error;
                 lastError = error;
                 const transient = isTransientRequestError(error);
@@ -488,6 +498,7 @@ async function sendInnerLoreRequestInner(settings, messages, signal, options = {
             console.warn(`[InnerLore] Primary background route failed; trying configured fallback profile ${routes[routeIndex + 1].profileId}.`);
         }
     }
+    console.error('[InnerLore] Model request exhausted', { attempts: diagnostics, totalElapsedMs: Date.now() - startedAt, configuredTimeoutSeconds: settings.requestTimeoutSeconds, circuitBreakerSeconds: settings.requestCircuitBreakerSeconds });
     const cause = lastError?.cause?.message ? `: ${lastError.cause.message}` : '';
     throw new Error(`${lastError?.message || 'InnerLore model request failed'}${cause}`, { cause: lastError });
 }
