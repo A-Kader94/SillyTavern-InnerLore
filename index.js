@@ -77,7 +77,7 @@ import {
     storyTextForAnalysis,
     insufficientResponseCap,
     planNarratorPromptDelivery,
-} from './prompts.js?v=9';
+} from './prompts.js?v=10';
 import { compileTriggerEventDeliveryPreview } from './event-delivery.js?v=2';
 import { requestEventDirectorProposal } from './event-director-client.js';
 import { buildEventDirectorMessages } from './event-director-prompts.js';
