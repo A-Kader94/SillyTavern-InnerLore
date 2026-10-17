@@ -2022,8 +2022,8 @@ function completedRebuildBatchEnd(messages, startIndex, targetIndex, maximumMess
     // Bound both turn count and actual narrative characters. A full-history
     // rebuild must never submit a huge first batch merely because it contains
     // few messages. Preserve complete player/story exchanges.
-    const messageLimit = Math.min(8, Math.max(2, Number(maximumMessages) || 2));
-    const characterLimit = 12_000;
+    const messageLimit = 2; // One completed player/story exchange per rebuild request.
+    const characterLimit = 8_000;
     let characters = 0;
     let completed = -1;
     for (let index = startIndex; index <= targetIndex; index++) {
@@ -3394,6 +3394,16 @@ async function analyzeRange(targetStore, startIndex, endIndex, options = {}) {
             maximumCharacters: 90_000,
         })
         : '';
+
+    if (runtime.rebuilding) {
+        console.info('[InnerLore] Rebuild input', {
+            curatorRange: transcript ? [curatorStart, curatorEnd] : null,
+            curatorCharacters: transcript.length,
+            progressionRange: progressionTranscript ? [progressionStart, progressionEnd] : null,
+            progressionCharacters: progressionTranscript.length,
+            curatorContainsPlanning: /Let me think about this properly|Flash thought:|\\*\\*Style check/i.test(transcript),
+        });
+    }
 
     // These agents commonly share one connection profile. Run them in series
     // so a provider with tight concurrency limits cannot make two background
