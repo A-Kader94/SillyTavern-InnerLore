@@ -549,17 +549,9 @@ ${foundationOnlyInstructions}
 ${transcript || '(No narrative passage supplied.)'}
 </PASSAGE>
 
-<REQUIRED_FINAL_VOLITION_AUDIT>
-Before returning JSON, inspect the passage for any agreement, obedience, composure, bargain, or compliance made under threatened harm, coercion, dependency, hierarchy, fear, or lack of alternatives. When present:
-1. Every public entity summary, description, fact, history, and current_state must state only the observable speech act or behaviour. Use “said,” “told,” “agreed aloud,” “stated willingness,” “submitted,” or the actual action; never shorten voiced compliance to the narrator claim “accepted,” “wanted,” or “welcomed.”
-2. A private relationship may assert sincere acceptance only when independent private evidence establishes it, not from dialogue alone. Otherwise store the conditional bargain and unresolved tension with inferred confidence, or omit it.
-3. Current Mind must distinguish what the NPC committed to aloud from what they privately want. If any inner_thought questions whether they meant the spoken yes, no other field may claim confirmed acceptance.
-Scan the proposed JSON for these contradictions and correct them before output.
-</REQUIRED_FINAL_VOLITION_AUDIT>
-
-<REQUIRED_SURFACE_NOVELTY_AUDIT>
-Before returning JSON, compare each proposed Current Mind field against RECENT_EXPRESSION_COOLDOWN. Rewrite or omit any already-spent gesture, prop use, gaze/body tell, self-command, conspicuous phrase, or dialogue-shaped sentence scaffold. Keep persistent emotion and conflict intact, but leave the narrator multiple fresh ways to express them. Do not solve repetition by flattening the NPC into generic calm exposition.
-</REQUIRED_SURFACE_NOVELTY_AUDIT>
+<FINAL_CHECK>
+Apply the coercion/volition consistency rules and expression-cooldown novelty rules above to every changed field. Never equate spoken compliance with private acceptance; never replay cooled-down surface gestures or phrases.
+</FINAL_CHECK>
 
 Return the strict JSON patch now.`;
 
