@@ -63,7 +63,7 @@ import {
     waitForBackgroundIdle,
     testInnerLoreConnection,
     setStoryIdleGate,
-} from './llm-client.js?v=16';
+} from './llm-client.js?v=17';
 import {
     deleteInnerLorebooksForChat,
     openInnerLorebook,
