@@ -474,6 +474,7 @@ async function sendInnerLoreRequestInner(settings, messages, signal, options = {
                 const elapsedMs = Date.now() - attemptStartedAt;
                 diagnostics.push({ route: routeLabel, attempt, elapsedMs, status: 'ok', outputCharacters: typeof output === 'string' ? output.length : 0 });
                 console.info('[InnerLore] Model attempt', diagnostics[diagnostics.length - 1]);
+                recordTelemetryEntry({ kind: 'model-attempt', phase: 'attempt', route: routeLabel, attempt, durationMs: elapsedMs, status: 'ok', outChars: typeof output === 'string' ? output.length : 0 });
                 if (routeIndex > 0) {
                     console.warn(`[InnerLore] Background request recovered through fallback profile ${route.profileId}.`);
                 }
@@ -483,6 +484,7 @@ async function sendInnerLoreRequestInner(settings, messages, signal, options = {
                 const failure = { route: routeLabel, attempt, elapsedMs, status: error?.name || 'Error', message: String(error?.message || error).slice(0, 180) };
                 diagnostics.push(failure);
                 console.warn('[InnerLore] Model attempt', failure);
+                recordTelemetryEntry({ kind: 'model-attempt', phase: 'attempt', route: routeLabel, attempt, durationMs: elapsedMs, status: error?.name || 'Error' });
                 if (error?.name === 'AbortError' || signal?.aborted) throw error;
                 lastError = error;
                 const transient = isTransientRequestError(error);
@@ -499,6 +501,7 @@ async function sendInnerLoreRequestInner(settings, messages, signal, options = {
         }
     }
     console.error('[InnerLore] Model request exhausted', { attempts: diagnostics, totalElapsedMs: Date.now() - startedAt, configuredTimeoutSeconds: settings.requestTimeoutSeconds, circuitBreakerSeconds: settings.requestCircuitBreakerSeconds });
+    recordTelemetryEntry({ kind: 'model-request', phase: 'exhausted', durationMs: Date.now() - startedAt, attempts: diagnostics.length, status: 'error', configuredTimeoutSeconds: settings.requestTimeoutSeconds, circuitBreakerSeconds: settings.requestCircuitBreakerSeconds });
     const cause = lastError?.cause?.message ? `: ${lastError.cause.message}` : '';
     throw new Error(`${lastError?.message || 'InnerLore model request failed'}${cause}`, { cause: lastError });
 }
