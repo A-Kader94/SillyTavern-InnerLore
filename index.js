@@ -3981,6 +3981,7 @@ async function rebuildFromChat({ automatic = false } = {}) {
     const oldStore = getChatStore();
     const ctx = context();
     if (!oldStore) return;
+    const wasFailedRebuild = Boolean(oldStore?.needsRebuild && oldStore?.lastError);
     if (!automatic) {
         // An explicit rebuild starts a fresh retry episode.
         oldStore.lastError = '';
@@ -4008,13 +4009,19 @@ async function rebuildFromChat({ automatic = false } = {}) {
     // expensive per-batch curator fold is resumed; World Progression is rebuilt
     // fully in both paths (its runtime is not resumed mid-history yet).
     const divergenceIndex = firstDivergenceIndex(ctx.chat, oldStore.processedFingerprints || {});
-    const resumeCheckpoint = automatic && Number.isFinite(divergenceIndex)
-        ? selectResumeCheckpoint(oldStore.checkpoints, ctx.chat, divergenceIndex)
+    // Failed rebuilds retain only validated completed-batch checkpoints. A
+    // manual retry may resume those, but a fresh healthy manual rebuild remains
+    // a full replay. Snapshot matching prevents reuse after chat edits.
+    const retryingFailedRebuild = wasFailedRebuild;
+    const resumeCheckpoint = (automatic || retryingFailedRebuild) && Number.isFinite(divergenceIndex)
+        ? selectResumeCheckpoint(oldStore.checkpoints, ctx.chat,
+            retryingFailedRebuild ? completedHistoryIndex + 1 : divergenceIndex)
         : null;
     const temporary = createEmptyStore(runChatId);
     let rebuildStartIndex = 0;
     if (resumeCheckpoint) {
         applyStoreCheckpoint(temporary, resumeCheckpoint);
+        recordTelemetryEntry({ kind: 'rebuild-checkpoint', phase: 'resumed', index: resumeCheckpoint.index });
         temporary.checkpoints = (oldStore.checkpoints || [])
             .filter(checkpoint => Number.isInteger(checkpoint?.index) && checkpoint.index <= resumeCheckpoint.index);
         rebuildStartIndex = resumeCheckpoint.index + 1;
@@ -4142,6 +4149,15 @@ async function rebuildFromChat({ automatic = false } = {}) {
             setStatus('working', 'Rebuild queued', 'History changed again during rebuilding; retrying from a clean snapshot.');
         } else {
             console.error(LOG_PREFIX, 'Rebuild failed:', error);
+            // Persist only completed, history-fingerprinted fold checkpoints.
+            // Do not expose partial entities or brains as the live store.
+            if (currentChatId() === runChatId && temporary.checkpoints?.length) {
+                const latest = temporary.checkpoints[temporary.checkpoints.length - 1];
+                if (Number.isInteger(latest?.index) && latest.index >= rebuildStartIndex) {
+                    oldStore.checkpoints = temporary.checkpoints;
+                    recordTelemetryEntry({ kind: 'rebuild-checkpoint', phase: 'saved-on-failure', index: latest.index });
+                }
+            }
             oldStore.needsRebuild = true;
             oldStore.lastError = cleanString(error.message || String(error), 2_000);
             oldStore.lastFailureAt = Date.now();
