@@ -255,6 +255,8 @@ OUTPUT SCHEMA
 ${cleanString(options.characterCard, 20_000) || '(No character-card fields supplied.)'}
 </CHARACTER_CARD>
 
+${cleanString(options.npcLorebookContext, 30_000) || '<AUTHORITATIVE_NPC_LOREBOOK>(No imported NPC entries.)</AUTHORITATIVE_NPC_LOREBOOK>'}
+
 <PUBLIC_ENTITY_KEYRING>
 ${JSON.stringify(entityKeyring(store))}
 </PUBLIC_ENTITY_KEYRING>

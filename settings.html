@@ -166,6 +166,13 @@
                         </label>
                     </div>
 
+                    <label for="il_curator_reasoning_mode">Background Curator reasoning</label>
+                    <select id="il_curator_reasoning_mode" class="text_pole">
+                        <option value="profile">Use connection profile (default)</option>
+                        <option value="none">Request no reasoning (experimental)</option>
+                    </select>
+                    <small class="inner-lore-hint">Only changes InnerLore Curator requests. The provider may ignore the no-reasoning request; inspect exported diagnostics to verify. Does not change story generation.</small>
+
                     <label for="il_maintenance_output_format">Background analysis response format</label>
                     <select id="il_maintenance_output_format" class="text_pole">
                         <option value="dsl">InnerLore DSL v1 (recommended)</option>
@@ -735,6 +742,7 @@
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
                 <div class="inline-drawer-content">
+                    <button id="il_download_diagnostics" type="button" class="menu_button" title="Download privacy-safe rebuild and request diagnostics"><i class="fa-solid fa-file-arrow-down"></i> Download Diagnostics</button>
                     <label for="il_custom_instructions">Additional curator instructions</label>
                     <textarea id="il_custom_instructions" class="text_pole" rows="5" placeholder="Optional scenario-independent preferences..."></textarea>
                     <label class="checkbox_label" for="il_debug">

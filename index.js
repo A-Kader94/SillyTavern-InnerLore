@@ -29,8 +29,10 @@ import {
     snapshotMessageRange,
     summaryceptionRecallText,
     uniqueStrings,
-} from './core.js?v=46';
+} from './core.js?v=47';
 import { compileContext } from './context-compiler.js?v=5';
+import { loadScopedNpcSources, formatNpcLorebookFoundation } from './npc-lorebook-importer.js';
+import { reconcileNpcLorebookBrains } from './npc-lorebook-runtime.js';
 import { deriveSceneState } from './scene.js?v=4';
 import { createMapPanel, createMinimap } from './map-view.js?v=3';
 import {
@@ -49,6 +51,9 @@ import {
 import { collectRecentStoryExpressions } from './expression-cooldown.js';
 import {
     backgroundInFlightCount,
+    getTelemetry,
+    nextTelemetryTurn,
+    recordTelemetryEntry,
     chooseDefaultProfileId,
     setPeerBackgroundInFlight,
     setSlotListener,
@@ -58,7 +63,7 @@ import {
     waitForBackgroundIdle,
     testInnerLoreConnection,
     setStoryIdleGate,
-} from './llm-client.js?v=14';
+} from './llm-client.js?v=20';
 import {
     deleteInnerLorebooksForChat,
     openInnerLorebook,
@@ -69,9 +74,10 @@ import {
     buildAnalysisMessages,
     formatCharacterCard,
     formatTranscript,
+    storyTextForAnalysis,
     insufficientResponseCap,
     planNarratorPromptDelivery,
-} from './prompts.js?v=7';
+} from './prompts.js?v=13';
 import { compileTriggerEventDeliveryPreview } from './event-delivery.js?v=2';
 import { requestEventDirectorProposal } from './event-director-client.js';
 import { buildEventDirectorMessages } from './event-director-prompts.js';
@@ -298,6 +304,7 @@ function narratorPill() {
 }
 
 function showNarratorPill(label) {
+    return; // Mobile-friendly compatibility mode: no floating narration banner.
     const pill = narratorPill();
     pill.querySelector('span').textContent = label;
     pill.style.display = 'flex';
@@ -463,6 +470,7 @@ const defaultSettings = Object.freeze({
     requestCircuitBreakerSeconds: 90,
     temperature: 0.15,
     maintenanceOutputFormat: 'dsl',
+    curatorReasoningMode: 'profile',
     repairMalformedJson: true,
     autoRebuildOnHistoryChange: true,
     autoRebuildMessageLimit: 120,
@@ -491,6 +499,10 @@ const defaultSettings = Object.freeze({
     automaticEventDirectorMinimumConfidence: 0.82,
     automaticEventDirectorIncludePrivateMinds: false,
     automaticEventDirectorExpirationTurns: 40,
+    npcLorebookImportEnabled: true,
+    npcLorebookImportMode: 'balanced',
+    npcLorebookMaximumNpcs: 10,
+    npcLorebookExtraBooks: [],
     lorebookRegistry: {},
     pendingChatCleanups: {},
     storageBackend: 'sqlite',
@@ -519,6 +531,10 @@ const runtime = {
     historyFallbackChatId: '',
     historyFallbackBoundary: -1,
     deferHistoryRebuild: false,
+    npcLorebookChatId: '',
+    npcLorebookNpcs: [],
+    npcLorebookContext: '',
+    npcLorebookWarnings: [],
     preparingFoundation: false,
     foundationPromise: null,
     foundationChatId: '',
@@ -686,6 +702,7 @@ function getSettings() {
     settings.pendingStorageCleanups = normalizeStorageRegistry(settings.pendingStorageCleanups);
     if (!['automatic', 'macro'].includes(settings.contextDeliveryMode)) settings.contextDeliveryMode = 'automatic';
     if (!['json', 'dsl'].includes(settings.maintenanceOutputFormat)) settings.maintenanceOutputFormat = 'dsl';
+    if (!['profile', 'none'].includes(settings.curatorReasoningMode)) settings.curatorReasoningMode = 'profile';
     settings.contextProfileId = cleanString(settings.contextProfileId, 64).toLocaleLowerCase();
     if (!/^[a-z0-9][a-z0-9_-]{0,63}$/u.test(settings.contextProfileId)) settings.contextProfileId = 'balanced';
     // Derived budgets are the always-on behavior; the mode is pinned and the
@@ -1756,6 +1773,9 @@ function resolveSceneLocationForDisplay(scene) {
 }
 
 function updateCastCards() {
+    document.getElementById('il_cast_bar')?.style.setProperty('display', 'none');
+    document.body.classList.remove('il-dock-active');
+    return; // Preserve SillyTavern's native chat layout.
     if (typeof document === 'undefined' || typeof document.createElement !== 'function') return;
     ensureDockStyles();
     const bar = castBarElement();
@@ -2004,13 +2024,24 @@ function completedAssistantTurnCount(messages, startIndex = 0, endIndex = messag
  * numeric lookback boundary falls between them.
  */
 function completedRebuildBatchEnd(messages, startIndex, targetIndex, maximumMessages) {
-    const candidateEnd = Math.min(
-        targetIndex,
-        startIndex + Math.max(1, Number(maximumMessages) || 1) - 1,
-    );
-    const completedAtOrBeforeBoundary = lastCompletedStoryIndex(messages, candidateEnd);
-    if (completedAtOrBeforeBoundary >= startIndex) return completedAtOrBeforeBoundary;
-    return firstCompletedStoryIndex(messages, startIndex, targetIndex);
+    // Bound both turn count and actual narrative characters. A full-history
+    // rebuild must never submit a huge first batch merely because it contains
+    // few messages. Preserve complete player/story exchanges.
+    const messageLimit = 2; // One completed player/story exchange per rebuild request.
+    const characterLimit = 8_000;
+    let characters = 0;
+    let completed = -1;
+    for (let index = startIndex; index <= targetIndex; index++) {
+        const message = messages[index];
+        const relevant = message && (!message.is_system || isSummaryceptionGhosted(message));
+        if (relevant) {
+            const nextLength = storyTextForAnalysis(message).length + 160;
+            if (completed >= startIndex && (index - startIndex >= messageLimit || characters + nextLength > characterLimit)) break;
+            characters += nextLength;
+            if (!message.is_user && cleanString(message.mes)) completed = index;
+        }
+    }
+    return completed >= startIndex ? completed : firstCompletedStoryIndex(messages, startIndex, targetIndex);
 }
 
 function boundedProgressionEnd(messages, startIndex, candidateEnd, maximumMessages, maximumCharacters = 85_000) {
@@ -2026,7 +2057,7 @@ function boundedProgressionEnd(messages, startIndex, candidateEnd, maximumMessag
             && cleanString(message.mes);
         if (!relevant) continue;
         if (lastCompleted >= startIndex && relevantMessages >= messageLimit) break;
-        const messageCharacters = cleanString(message?.mes, 30_000).length + 160;
+        const messageCharacters = storyTextForAnalysis(message).length + 160;
         if (lastCompleted >= startIndex && characters + messageCharacters > maximumCharacters) break;
         relevantMessages++;
         characters += messageCharacters;
@@ -2406,6 +2437,7 @@ function applySettingsToUI() {
         il_temperature: settings.temperature,
         il_request_timeout: settings.requestTimeoutSeconds,
         il_maintenance_output_format: settings.maintenanceOutputFormat,
+        il_curator_reasoning_mode: settings.curatorReasoningMode,
         il_repair_json: settings.repairMalformedJson,
         il_process_every: settings.processEveryAssistantTurns,
         il_adaptive_maintenance: settings.adaptiveMaintenanceEnabled,
@@ -3209,6 +3241,45 @@ function settingsWorldProgressionWatermark(store) {
         : store?.lastProcessedIndex ?? -1;
 }
 
+/** Load only explicitly attached World Info books; originals remain untouched. */
+async function refreshNpcLorebookSources() {
+    const chatId=currentChatId();
+    runtime.npcLorebookChatId='';
+    runtime.npcLorebookNpcs=[];
+    runtime.npcLorebookContext='';
+    runtime.npcLorebookWarnings=[];
+    const settings=getSettings();
+    if(!chatId||settings.npcLorebookImportEnabled===false)return;
+    const result=await loadScopedNpcSources(context(),{
+        explicitNames:settings.npcLorebookExtraBooks||[],
+        mode:settings.npcLorebookImportMode==='strict'?'strict':'balanced',
+        maximumNpcs:settings.npcLorebookMaximumNpcs||10,
+    });
+    if(currentChatId()!==chatId)return;
+    runtime.npcLorebookChatId=chatId;
+    runtime.npcLorebookNpcs=result.npcs;
+    runtime.npcLorebookWarnings=result.warnings;
+    runtime.npcLorebookContext=formatNpcLorebookFoundation(result.npcs);
+    if(result.warnings.length){
+        console.warn('[InnerLore] NPC source read incomplete; source reconciliation skipped',result.warnings);
+        return;
+    }
+    const store=getChatStore();
+    if(!store||store.needsRebuild||currentChatId()!==chatId)return;
+    const changes=reconcileNpcLorebookBrains(store,result.npcs,{normalizeBrainRecord,canonicalNameKey});
+    if(changes.changed){
+        if(changes.created)store.expressionFoundationVersion=0;
+        await saveChatStore();
+        console.info('[InnerLore] NPC lorebook foundations synced',changes);
+    }
+}
+function currentNpcLorebookContext() {
+    return runtime.npcLorebookChatId===currentChatId()?runtime.npcLorebookContext:'';
+}
+function currentNpcLorebookNpcs() {
+    return runtime.npcLorebookChatId===currentChatId()?runtime.npcLorebookNpcs:[];
+}
+
 function getCardContext() {
     try {
         return formatCharacterCard(context().getCharacterCardFields?.() || {});
@@ -3330,6 +3401,16 @@ async function analyzeRange(targetStore, startIndex, endIndex, options = {}) {
         })
         : '';
 
+    if (runtime.rebuilding) {
+        console.info('[InnerLore] Rebuild input', {
+            curatorRange: transcript ? [curatorStart, curatorEnd] : null,
+            curatorCharacters: transcript.length,
+            progressionRange: progressionTranscript ? [progressionStart, progressionEnd] : null,
+            progressionCharacters: progressionTranscript.length,
+            curatorContainsPlanning: /Let me think about this properly|Flash thought:|\\*\\*Style check/i.test(transcript),
+        });
+    }
+
     // These agents commonly share one connection profile. Run them in series
     // so a provider with tight concurrency limits cannot make two background
     // requests race each other. Each result is committed independently below,
@@ -3343,6 +3424,8 @@ async function analyzeRange(targetStore, startIndex, endIndex, options = {}) {
                 store: targetStore,
                 currentIndex: curatorEnd,
                 characterCard: getCardContext(),
+                npcLorebookContext: currentNpcLorebookContext(),
+                npcLorebookNpcs: currentNpcLorebookNpcs(),
                 playerName: ctx.name1,
                 recentExpressionText: collectRecentStoryExpressions(ctx.chat, {
                     endIndex: curatorEnd,
@@ -3371,6 +3454,8 @@ async function analyzeRange(targetStore, startIndex, endIndex, options = {}) {
                 progression: targetStore.progression,
                 currentIndex: progressionEnd,
                 characterCard: getCardContext(),
+                npcLorebookContext: currentNpcLorebookContext(),
+                npcLorebookNpcs: currentNpcLorebookNpcs(),
                 playerName: ctx.name1,
                 settings,
             });
@@ -3896,6 +3981,7 @@ async function rebuildFromChat({ automatic = false } = {}) {
     const oldStore = getChatStore();
     const ctx = context();
     if (!oldStore) return;
+    const wasFailedRebuild = Boolean(oldStore?.needsRebuild && oldStore?.lastError);
     if (!automatic) {
         // An explicit rebuild starts a fresh retry episode.
         oldStore.lastError = '';
@@ -3923,13 +4009,19 @@ async function rebuildFromChat({ automatic = false } = {}) {
     // expensive per-batch curator fold is resumed; World Progression is rebuilt
     // fully in both paths (its runtime is not resumed mid-history yet).
     const divergenceIndex = firstDivergenceIndex(ctx.chat, oldStore.processedFingerprints || {});
-    const resumeCheckpoint = automatic && Number.isFinite(divergenceIndex)
-        ? selectResumeCheckpoint(oldStore.checkpoints, ctx.chat, divergenceIndex)
+    // Failed rebuilds retain only validated completed-batch checkpoints. A
+    // manual retry may resume those, but a fresh healthy manual rebuild remains
+    // a full replay. Snapshot matching prevents reuse after chat edits.
+    const retryingFailedRebuild = wasFailedRebuild;
+    const resumeCheckpoint = (automatic || retryingFailedRebuild) && Number.isFinite(divergenceIndex)
+        ? selectResumeCheckpoint(oldStore.checkpoints, ctx.chat,
+            retryingFailedRebuild ? completedHistoryIndex + 1 : divergenceIndex)
         : null;
     const temporary = createEmptyStore(runChatId);
     let rebuildStartIndex = 0;
     if (resumeCheckpoint) {
         applyStoreCheckpoint(temporary, resumeCheckpoint);
+        recordTelemetryEntry({ kind: 'rebuild-checkpoint', phase: 'resumed', index: resumeCheckpoint.index });
         temporary.checkpoints = (oldStore.checkpoints || [])
             .filter(checkpoint => Number.isInteger(checkpoint?.index) && checkpoint.index <= resumeCheckpoint.index);
         rebuildStartIndex = resumeCheckpoint.index + 1;
@@ -4016,6 +4108,9 @@ async function rebuildFromChat({ automatic = false } = {}) {
 
         carryManualState(oldStore, temporary);
         copyCardExpressionFoundation(temporary, oldStore, { copyCurrentMind: false });
+        if(runtime.npcLorebookChatId===runChatId&&!runtime.npcLorebookWarnings.length){
+            reconcileNpcLorebookBrains(temporary,runtime.npcLorebookNpcs,{normalizeBrainRecord,canonicalNameKey});
+        }
         temporary.lorebookName = oldStore.lorebookName;
         temporary.lastProcessedIndex = completedHistoryIndex;
         temporary.assistantTurnsSincePass = 0;
@@ -4054,6 +4149,15 @@ async function rebuildFromChat({ automatic = false } = {}) {
             setStatus('working', 'Rebuild queued', 'History changed again during rebuilding; retrying from a clean snapshot.');
         } else {
             console.error(LOG_PREFIX, 'Rebuild failed:', error);
+            // Persist only completed, history-fingerprinted fold checkpoints.
+            // Do not expose partial entities or brains as the live store.
+            if (currentChatId() === runChatId && temporary.checkpoints?.length) {
+                const latest = temporary.checkpoints[temporary.checkpoints.length - 1];
+                if (Number.isInteger(latest?.index) && latest.index >= rebuildStartIndex) {
+                    oldStore.checkpoints = temporary.checkpoints;
+                    recordTelemetryEntry({ kind: 'rebuild-checkpoint', phase: 'saved-on-failure', index: latest.index });
+                }
+            }
             oldStore.needsRebuild = true;
             oldStore.lastError = cleanString(error.message || String(error), 2_000);
             oldStore.lastFailureAt = Date.now();
@@ -4171,15 +4275,15 @@ const FOUNDATION_OUTER_VOICE_KINDS = new Set([
 
 function cardBackedEntries(entries) {
     return Object.fromEntries(Object.entries(entries || {}).filter(([, entry]) => (
-        entry?.basis === 'character_card'
+        entry?.basis === 'character_card' || entry?.basis === 'lorebook'
     )));
 }
 
 function hasStructuredExpressionFoundation(brain) {
     const facets = Object.values(brain?.persistentSelf?.facets || {})
-        .filter(entry => entry?.basis === 'character_card');
+        .filter(entry => entry?.basis === 'character_card' || entry?.basis === 'lorebook');
     const voice = Object.values(brain?.persistentSelf?.voice || {})
-        .filter(entry => entry?.basis === 'character_card');
+        .filter(entry => entry?.basis === 'character_card' || entry?.basis === 'lorebook');
     return facets.some(entry => entry.kind === 'personal_anchor')
         && voice.some(entry => entry.kind === 'thought_style')
         && voice.some(entry => entry.kind === 'emphasis')
@@ -4313,6 +4417,8 @@ async function prepareExpressionFoundation(targetStore, boundary) {
             store: targetStore,
             currentIndex: endIndex,
             characterCard: getCardContext(),
+            npcLorebookContext: currentNpcLorebookContext(),
+            npcLorebookNpcs: currentNpcLorebookNpcs(),
             playerName: ctx.name1,
             recentExpressionText: collectRecentStoryExpressions(ctx.chat, {
                 endIndex,
@@ -4908,6 +5014,7 @@ function bindUIEvents() {
         refreshContextAfterConfigurationChange();
     });
     bindSelect('il_maintenance_output_format', 'maintenanceOutputFormat', ['json', 'dsl']);
+    bindSelect('il_curator_reasoning_mode', 'curatorReasoningMode', ['profile', 'none']);
     bindCheckbox('il_repair_json', 'repairMalformedJson');
     bindCheckbox('il_auto_rebuild_history', 'autoRebuildOnHistoryChange');
     bindCheckbox('il_debug', 'debug');
@@ -5141,6 +5248,57 @@ function bindUIEvents() {
         } catch (error) {
             toastr.error(`Could not expand the narrator prompt: ${error?.message || error}`, DISPLAY_NAME);
         }
+    });
+    document.getElementById('il_download_diagnostics')?.addEventListener('click', () => {
+        // Export only operational metrics. Never include prompts, story text,
+        // model responses, chat identifiers, connection profiles, or API keys.
+        const safeEntries = getTelemetry().entries.slice(-800).map(entry => {
+            const allowed = ['t', 'turn', 'kind', 'phase', 'durationMs', 'inChars', 'outChars', 'status',
+                'route', 'attempt', 'attempts', 'configuredTimeoutSeconds', 'circuitBreakerSeconds',
+                'component', 'chars', 'chunks', 'reasoningChars', 'overdueMs', 'mode', 'index'];
+            return Object.fromEntries(allowed.filter(key =>
+                ['string', 'number', 'boolean'].includes(typeof entry[key])
+            ).map(key => [key, entry[key]]));
+        });
+        const store = runtime.store;
+        const report = {
+            schema: 'innerlore-diagnostics-v2',
+            exportedAt: new Date().toISOString(),
+            extensionVersion: EXTENSION_VERSION,
+            status: {
+                kind: runtime.statusKind,
+                label: runtime.statusLabel,
+                // Deliberately omit free-text error details that could contain provider payloads.
+                rebuilding: Boolean(runtime.rebuilding),
+                processing: Boolean(runtime.processing),
+                rebuildQueued: Boolean(runtime.historyRebuildQueued),
+            },
+            chat: {
+                messageCount: context().chat?.length || 0,
+                processedIndex: Number.isInteger(store?.lastProcessedIndex) ? store.lastProcessedIndex : null,
+                rebuildRequired: Boolean(store?.needsRebuild),
+            },
+            configuration: {
+                outputFormat: getSettings().maintenanceOutputFormat,
+                curatorReasoningMode: getSettings().curatorReasoningMode,
+                maxResponseTokens: Number(getSettings().maximumResponseTokens) || null,
+                requestTimeoutSeconds: Number(getSettings().requestTimeoutSeconds) || null,
+                circuitBreakerSeconds: Number(getSettings().requestCircuitBreakerSeconds) || null,
+                progressionEnabled: Boolean(getSettings().worldProgressionEnabled),
+                progressionTimeoutSeconds: Number(getSettings().progressionRequestTimeoutSeconds) || null,
+            },
+            telemetry: safeEntries,
+        };
+        const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = 'innerlore-diagnostics-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        toastr.success('Diagnostics downloaded without story text or credentials.', DISPLAY_NAME);
     });
     document.getElementById('il_export_telemetry')?.addEventListener('click', () => {
         const data = getTelemetry();
@@ -5670,29 +5828,8 @@ function registerEvents() {
         eventSource.on(events.CHAT_COMPLETION_PROMPT_READY, async prompt => {
             const settings = getSettings();
             if (!settings.enabled || !runtime.activeStoryGenerationId) return;
-            // Background-first: everything already running - and anything
-            // scheduled but not yet started - completes before the story
-            // narrates, so the packet carries the freshest world state.
-            const scheduledBackground = () => Boolean(
-                runtime.queued || runtime.historyRebuildQueued || runtime.foundationPromise
-                || runtime.historyTimer || runtime.preparingFoundation);
+            // Compatibility mode: never block native narration on InnerLore background tasks.
             const waitStart = Date.now();
-            if (backgroundInFlightCount() > 0 || scheduledBackground()) {
-                console.debug(`[InnerLore] Background-first: story waiting behind ${backgroundInFlightCount()} in-flight background request(s)${scheduledBackground() ? ' + scheduled work' : ''}.`);
-                showNarratorPill('Narrating - background work finishing first');
-                try {
-                    for (;;) {
-                        await waitForBackgroundIdle();
-                        if (!scheduledBackground() || Date.now() - waitStart > 120_000) break;
-                        await new Promise(resolve => setTimeout(resolve, 750));
-                    }
-                } finally {
-                    console.debug(`[InnerLore] Background-first: background work done after ${Math.round((Date.now() - waitStart) / 1000)}s; the story request leaves now.`);
-                    showNarratorPill('Narrating');
-                }
-            } else {
-                console.debug('[InnerLore] Background-first: no pending background work; the story request leaves immediately.');
-            }
             recordTelemetryEntry({
                 kind: 'story', phase: 'departed',
                 waitedForBackgroundMs: Date.now() - waitStart,
@@ -5703,6 +5840,9 @@ function registerEvents() {
             runtime.storyRequestInFlightAt = Date.now();
             runtime.storyClaimIsQuiet = generationType === 'quiet';
             runtime.announceStoryState?.(true);
+            // Preserve native SillyTavern prompt history and reasoning formatting.
+            // The former history bypass removed assistant messages, including reasoning metadata.
+            return;
             if (!runtime.derivedContext) return;
             // SillyTavern 1.18 passes { chat }; older builds passed { messages }.
             // The array must be mutated in place - reassignment is ignored.
@@ -5769,6 +5909,9 @@ function registerEvents() {
         });
     }
     eventSource.on(events.CHAT_CHANGED, async () => {
+        runtime.npcLorebookChatId='';
+        runtime.npcLorebookNpcs=[];
+        runtime.npcLorebookContext='';
         updateCastCards();
         restoreNarratorPromptSwap();
         syncNarrativeLog();
@@ -5802,6 +5945,7 @@ function registerEvents() {
             toastr.error(`InnerLore could not open its SQLite store: ${error.message || error}`, DISPLAY_NAME, { timeOut: 0 });
             return;
         }
+        try { await refreshNpcLorebookSources(); }catch(error){console.error('[InnerLore] NPC source refresh failed',error);}
         setStatus('idle', 'Idle', currentChatId() ? 'Ready for the next story reply.' : 'Waiting for a chat.');
         updateUI();
         // Prime the compiled packet (and the cast cards' scene participants)
@@ -5820,6 +5964,9 @@ function registerEvents() {
         } else if (!expressionFoundationReady(getChatStore())) {
             scheduleExpressionFoundationWarmup(250);
         }
+    });
+    if(events.WORLD_INFO_UPDATED)eventSource.on(events.WORLD_INFO_UPDATED,()=>{
+        void refreshNpcLorebookSources().then(()=>updateInjection()).catch(error=>console.error('[InnerLore] NPC refresh failed',error));
     });
     const scheduleExternalHistoryRebuild = () => {
         // Regenerate removes the empty placeholder and Continue may update its
@@ -5869,6 +6016,7 @@ async function initializeServerState() {
         return;
     }
     registerEvents();
+    try { await refreshNpcLorebookSources(); }catch(error){console.error('[InnerLore] NPC source startup failed',error);}
 
     if (Object.keys(getSettings().pendingChatCleanups).length
         || Object.keys(getSettings().pendingStorageCleanups).length) {
